@@ -42,14 +42,24 @@ function installNotification(permission = 'granted') {
  */
 function loadClient() {
   const registrations = [];
+  const listeners = new Map();
   const window = {
     __ModuleLoader__: {
       load(registration) {
         registrations.push(registration);
       },
     },
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners.get(type)?.delete(fn);
+    },
+    dispatchEvent(event) {
+      for (const fn of [...(listeners.get(event.type) ?? [])]) fn(event);
+      return true;
+    },
     focus() {
       window.focused = true;
     },
@@ -60,6 +70,8 @@ function loadClient() {
     console,
     Map,
     Set,
+    JSON,
+    String,
     Notification: undefined,
     document: undefined,
   });
@@ -74,11 +86,31 @@ function loadClient() {
 }
 
 /** Mount the client over a fake sessions list and Notification. */
-function mountClient({ permission = 'granted', focused = false, hidden = false, list } = {}) {
+function mountClient({
+  permission = 'granted',
+  focused = false,
+  hidden = false,
+  list,
+  helper = false,
+  appFocused,
+} = {}) {
   const { exported, window, context } = loadClient();
   const { FakeNotification, instances } = installNotification(permission);
   context.Notification = FakeNotification;
   window.Notification = FakeNotification;
+  const posted = [];
+  if (helper) {
+    window.chrome = {
+      webview: {
+        postMessage(payload) {
+          posted.push(payload);
+        },
+      },
+    };
+  }
+  if (typeof appFocused === 'boolean') {
+    window.__dshHelperAppFocused = appFocused;
+  }
   const document = {
     visibilityState: hidden ? 'hidden' : 'visible',
     hasFocus: () => focused,
@@ -96,7 +128,7 @@ function mountClient({ permission = 'granted', focused = false, hidden = false, 
     },
   };
   exported.apply(ctx);
-  return { exported, window, document, FakeNotification, instances, opened, sessions, ctx };
+  return { exported, window, document, FakeNotification, instances, opened, sessions, ctx, posted };
 }
 
 test('the client factory exports the browser plugin shape', () => {
@@ -197,4 +229,57 @@ test('subagent completions stay silent in the shipped client defaults', () => {
     current: 'root',
   });
   assert.equal(instances.length, 0);
+});
+
+test('a helper WebView host posts a JSON string instead of using Notification', () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'Fix retries', running: true }) },
+    current: 'a',
+  });
+  const { instances, posted, FakeNotification } = mountClient({
+    permission: 'denied',
+    focused: false,
+    helper: true,
+    list,
+  });
+  list.set({
+    byId: { a: summary({ id: 'a', displayTitle: 'Fix retries', running: false }) },
+    current: 'a',
+  });
+  assert.equal(instances.length, 0);
+  assert.equal(FakeNotification.requestPermissionCalls, 0);
+  assert.equal(posted.length, 1);
+  assert.equal(typeof posted[0], 'string');
+  const payload = JSON.parse(posted[0]);
+  assert.equal(payload.kind, 'notify-away');
+  assert.equal(payload.title, 'Fix retries');
+  assert.equal(payload.body, 'Task finished.');
+  assert.equal(payload.sessionId, 'a');
+  assert.equal(payload.tag, 'notify-away:a');
+});
+
+test('helper appFocused=false posts even when document.hasFocus still reports true', () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
+    current: 'a',
+  });
+  const { instances, posted } = mountClient({
+    focused: true,
+    helper: true,
+    appFocused: false,
+    list,
+  });
+  list.set({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: false }) },
+    current: 'a',
+  });
+  assert.equal(instances.length, 0);
+  assert.equal(posted.length, 1);
+});
+
+test('a helper click event focuses the window and opens that session', () => {
+  const { window, opened } = mountClient({ focused: false, helper: true });
+  window.dispatchEvent({ type: 'dsh-helper-notify-click', detail: { sessionId: 'sess-1' } });
+  assert.equal(window.focused, true);
+  assert.deepEqual(opened, ['sess-1']);
 });

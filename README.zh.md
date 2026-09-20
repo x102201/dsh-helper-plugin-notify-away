@@ -4,12 +4,11 @@
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![dsh: 0.1.5-rc.2](https://img.shields.io/badge/dsh-0.1.5--rc.2-4b32c3)
-![tests: 41 passing](https://img.shields.io/badge/tests-41%20passing-brightgreen)
-![tests: 41 passing](https://img.shields.io/badge/tests-41%20passing-brightgreen)
+![tests: 45 passing](https://img.shields.io/badge/tests-45%20passing-brightgreen)
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）用的 **系统通知**插件：仿照 Cursor 的 Agent toast——你正在看刚结束的那场会话时保持安静，切到别的窗口才弹出系统通知。
 
-**为什么需要它**：一轮 `dsh` 跑得久，人很容易切去干别的。人还在看的时候，侧栏自己的绿色 done 点已经够用。这个插件覆盖另一种情况——你不在看——用浏览器 `Notification`；Web UI 跑在 `http://127.0.0.1` 上，于是会变成 Windows / macOS 的系统横幅。
+**为什么需要它**：一轮 `dsh` 跑得久，人很容易切去干别的。人还在看的时候，侧栏自己的绿色 done 点已经够用。这个插件覆盖另一种情况——你不在看。在 dsh-helper 里通过 `chrome.webview.postMessage` 让宿主弹系统 toast；在系统浏览器里回退到 `Notification` API。
 
 **用起来是什么样**：开一个任务，切到别的应用或标签。根会话变成 idle 时，会弹出以该会话为标题的 toast。点它会聚焦 Web UI 并打开那场会话。如果你本来就在看那场、窗口也在前台，则什么都不弹。
 
@@ -34,9 +33,9 @@ dsh plugin --profile web add github:x102201/dsh-helper-plugin-notify-away
 | 完成边沿 | 列出的会话 `running` 翻成 idle 时触发。第一次观察只记录该位，刷新时已经 idle 的会话不会弹。 |
 | 离开门闩 | 只在你正在看**那场**会话时保持安静：页面可见、窗口有焦点、且 `list.current` 对得上。隐藏标签、窗口失焦、或后台会话结束 → 弹 toast。 |
 | 根会话 | 子 Agent 行（`origin: 'subagent'` 或带 `parentId`）被忽略，避免并行子任务刷屏。 |
-| 权限 | 在你第一次点击或按键时申请，而不是你走开之后才弹（Safari 只接受手势里的申请）。 |
+| 权限 | 在 dsh-helper 里不需要。在系统浏览器里：第一次点击或按键时申请（Safari 只接受手势里的申请）。 |
 | 去重 | 每条 toast 带 `notify-away:<sessionId>` 标签，重复的会替换上一条而不是堆叠。 |
-| 点击 | 聚焦窗口，并调用 `ctx.sessions.open(sessionId)`。 |
+| 点击 | 聚焦窗口，并调用 `ctx.sessions.open(sessionId)`。helper 点回来走 `dsh-helper-notify-click` 事件。 |
 
 插件**不写任何自有会话事件类型**。它只读侧栏用的那份会话列表快照。
 
@@ -83,7 +82,7 @@ dsh plugin --profile web add github:<owner>/<repo>
 dsh web            # 等价于：dsh --profile web
 ```
 
-浏览器第一次询问通知权限时请允许（你的第一次点击或按键）。在 macOS 上，还要在 **系统设置 → 通知** 里允许该浏览器。
+在系统浏览器里，第一次询问通知权限时请允许（你的第一次点击或按键）。在 macOS 上，还要在 **系统设置 → 通知** 里允许该浏览器。dsh-helper 的内嵌面板不需要这项权限。
 
 ### 不安装也能挂 host 行
 
@@ -140,19 +139,21 @@ sessions.list 快照  ──►  running → idle 边沿
                               │
                    shouldNotify(away || current !== sessionId)
                               │
-                   浏览器 Notification  ──►  系统横幅
+          chrome.webview.postMessage  ──►  helper 系统 toast
+                     或 Notification  ──►  浏览器系统横幅
                               │
                    点击  ──►  window.focus + sessions.open
 ```
 
 - **离开是页面事实。** `document.visibilityState === 'hidden'` 或 `!document.hasFocus()`。host 侧没有焦点信号。
+- **dsh-helper 不需要 Notification 权限。** 客户端在 WebView2 已有的页 ↔ 宿主通道上发送 `{ kind: "notify-away", title, body, sessionId, tag }`。helper 用自己的 AUMID 弹 toast；点击后聚焦该实例，并派发 `dsh-helper-notify-click`。
 - **客户端包是工厂，不是 ESM 图。** Web UI 通过 `window.__ModuleLoader__.load` 加载 `client.js`。相对的 `./lib/` import 解析不了，所以 `client.js` 内联了 `lib/policy.js` 里那套已单测的策略。
 - **没有安装期构建。** 因此 `link:` 与 `github:` 行为一致：host 只 import `node:` 和相对路径，也没有需要 pnpm allowlist 的 `prepare`/`postinstall`。
 
 ## 边界
 
 - 只覆盖完成。等待审批 / `ask_user_question` 的 toast 不在这一版。
-- 权限由浏览器持有：提示被拒绝后，该源上插件会保持安静。
+- 在系统浏览器里权限由浏览器持有：提示被拒绝后，该源上插件会保持安静。dsh-helper 面板走 `postMessage`，不受这项权限限制。
 - 取消一轮也会变成 idle，所以取消的任务仍会弹出「已完成」toast。
 - host 行的 `config` 会校验，但还不会推到浏览器半边。
 
@@ -165,7 +166,8 @@ sessions.list 快照  ──►  running → idle 边沿
 | host 行 `name: ./index.js` + `dsh.bundle.patch` | `link:` / `github:` 安装 |
 | `package.json` 的 `dsh.client`（`platform: web`，`inject: [@deepseek-ai/dsh-client-runtime]`） | Web UI 扫描并提供 `./client` |
 | 客户端 `inject: ['sessions']` | `ctx.sessions.list` 快照 + `ctx.sessions.open` |
-| 浏览器 `Notification` API | Web UI 源上的系统横幅 |
+| `chrome.webview.postMessage` | dsh-helper 面板 → 系统 toast（不需要 Notification 权限） |
+| 浏览器 `Notification` API | 不在 helper 里时的回退系统横幅 |
 
 ## 测试
 
@@ -178,7 +180,7 @@ npm run test:direct   # 单进程运行（适配会拦子进程的沙箱环境�
 
 ```text
 index.js                     Cordis host 插件：配置校验 + ready 日志
-client.js                    ModuleLoader 工厂：离开门闩 + Notification
+client.js                    ModuleLoader 工厂：离开门闩 + postMessage / Notification
 cordis.patch.yml             bundle 补丁：插入 host 行
 lib/config.js                配置 schema 与默认值
 lib/policy.js                纯 shouldNotify / running→idle 折叠（已单测）

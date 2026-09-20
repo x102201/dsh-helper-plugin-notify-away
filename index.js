@@ -17,9 +17,11 @@
  *
  * ## Host vs browser
  *
- * The toast itself is a browser `Notification` (on `http://127.0.0.1` this
- * becomes a Windows / macOS system banner). Focus lives in the page, so the
- * real work is `client.js`, loaded through `dsh.client`. This host row:
+ * The client decides *when* to notify (away gate, current session). In
+ * dsh-helper's WebView2 panel it signals via `chrome.webview.postMessage`
+ * and helper shows the OS toast; in a system browser it falls back to
+ * `Notification`. Focus lives in the page, so the real work is `client.js`,
+ * loaded through `dsh.client`. This host row:
  *
  * - makes the package an active Loader entry, which is what the client-module
  *   scanner reads `dsh.client` from;
@@ -46,7 +48,8 @@ import { PLUGIN_NAME, resolveConfig } from './lib/config.js';
 export const name = PLUGIN_NAME;
 
 /**
- * No host services are required: the toast is dispatched in the browser.
+ * No host services are required: the toast is dispatched from the browser
+ * half (postMessage to helper, or Notification in a system browser).
  * An empty inject list still lets UI-less profiles compose the row so the
  * client scanner can see the package.
  */

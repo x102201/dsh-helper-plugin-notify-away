@@ -35,6 +35,19 @@ test('isDocumentAway is true when the tab is hidden or unfocused', () => {
   assert.equal(isDocumentAway({ visibilityState: 'visible' }), false);
 });
 
+test('isDocumentAway trusts helper appFocused over document.hasFocus', () => {
+  assert.equal(
+    isDocumentAway({ visibilityState: 'visible', hasFocus: () => true, appFocused: false }),
+    true,
+    'Alt+Tab away from helper: WebView2 hasFocus often stays true',
+  );
+  assert.equal(
+    isDocumentAway({ visibilityState: 'visible', hasFocus: () => false, appFocused: true }),
+    false,
+    'clicking helper chrome unfocuses the panel but the app is still in front',
+  );
+});
+
 test('watchCompletions ignores the first observation, including an already-idle session', () => {
   const fired = [];
   const list = createFakeSessionList({
