@@ -1,0 +1,66 @@
+{
+  "name": "dsh-helper-plugin-notify-away",
+  "version": "0.1.0",
+  "description": "dsh plugin: Cursor-style system notifications when a session finishes while you are looking elsewhere. Silent while you watch that session. Installs via link: or github:.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "notification",
+    "desktop-notification",
+    "unfocus",
+    "cordis",
+    "ai-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x102201/dsh-helper-plugin-notify-away.git"
+  },
+  "bugs": {
+    "url": "https://github.com/x102201/dsh-helper-plugin-notify-away/issues"
+  },
+  "homepage": "https://github.com/x102201/dsh-helper-plugin-notify-away#readme",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./lib/*": "./lib/*",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "examples",
+    "scripts",
+    "test",
+    "test-support",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:direct": "node scripts/run-tests.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "private": false
+}

@@ -1,0 +1,14 @@
+# Run the plugin straight from a checkout, with no install at all.
+#
+#   dsh --profile web --patch <checkout>/examples/standalone.patch.yml
+#
+# Relative `name`s are anchored to THIS patch file, so `../index.js` points at
+# the plugin entry beside this directory. The browser half still needs the
+# package to be resolvable as `dsh-helper-plugin-notify-away` (a `link:`
+# install, or this overlay plus the package on the profile's node_modules)
+# because `dsh.client` is discovered from the package manifest, not from this
+# insert. For a no-install loop of the host row alone, this overlay is enough.
+
+- insert:
+    - id: notify-away-standalone
+      name: ../index.js

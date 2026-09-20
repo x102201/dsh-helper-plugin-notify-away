@@ -1,0 +1,26 @@
+# Wire the plugin into a profile's own patch layer, with config overrides.
+#
+# Use this instead of the bundle when the package is already resolvable in the
+# profile (a `link:`/`github:` dependency added with `dsh plugin --profile web
+# add`) and you want to change the plugin's config at the same time.
+#
+# Where it goes:
+#   $DSH_HOME/profiles/web/cordis.patch.yml    (your patch layer)
+# or pass it directly:
+#   dsh --profile web --patch examples/profile-patch.yml
+#
+# A patch replaces the targeted row's whole `config` mapping. Because this patch
+# *inserts* the row rather than targeting the bundle's row, it must state every
+# key it wants; everything omitted keeps the plugin's default.
+#
+# The host row validates these keys at boot. The browser half currently uses
+# the same defaults (no RPC yet), so leave the mapping empty unless you are
+# pinning the documented defaults on purpose.
+
+- insert:
+    - id: notify-away
+      name: 'dsh-helper-plugin-notify-away'
+      config:
+        onlyWhenAway: true
+        includeSubagents: false
+        body: Task finished.

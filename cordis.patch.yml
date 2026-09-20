@@ -1,0 +1,43 @@
+# The dsh-helper-plugin-notify-away bundle patch.
+#
+# This file is what `package.json`'s `dsh.bundle.patch` points at, so installing
+# the package as a profile bundle is enough:
+#
+#   dsh plugin --profile web add link:/absolute/path/to/dsh-helper-plugin-notify-away
+#   dsh plugin --profile web add github:<owner>/dsh-helper-plugin-notify-away
+#
+# `dsh plugin ... add` reconciles `dsh.profile.bundles` from the installed state,
+# so the package above joins the layer stack automatically; no hand editing of
+# the profile manifest is needed. Restart `dsh --profile web` (or `dsh web`)
+# afterwards to mount it.
+#
+# `name: ./index.js` is anchored to THIS file's directory by dsh-app-boot's
+# `anchorInsertedPluginNames`, so the row resolves inside the installed copy of
+# the package — a pnpm store copy, a `link:` symlink, or a `github:` checkout —
+# without depending on how the package was installed.
+#
+# The browser half is not this row: `package.json`'s `dsh.client` declaration
+# is what makes dsh-client-modules scan the package, serve `./client` as a
+# ModuleLoader bundle, and compose it into the Web UI. The host row exists so
+# the package is an active Loader entry (that scan's input) and so config is
+# validated at boot.
+#
+# ── overriding the config ───────────────────────────────────────────────────
+# A patch replaces a targeted row's whole `config` mapping, and every key here
+# is optional, so restate only what you change. Put this in the profile's own
+# `cordis.patch.yml` (or a `--patch` overlay applied after this bundle):
+#
+#   - id: notify-away
+#     config:
+#       onlyWhenAway: true
+#       includeSubagents: false
+#       body: Task finished.
+#
+# Accepted keys: onlyWhenAway, includeSubagents, title, body.
+# The host row validates these at load. The browser half currently uses the
+# same defaults (it cannot read host-row config without an RPC); keep the two
+# in lockstep or leave the mapping empty. See README.md.
+
+- insert:
+    - id: notify-away
+      name: ./index.js
