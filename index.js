@@ -9,10 +9,13 @@
  * adds that shape to the DeepSeek Harness Web UI:
  *
  * - A toast fires on a root session's `running → idle` edge.
+ * - A toast also fires when that session newly waits on you (approval,
+ *   question, plan review, or any later pending-interaction kind). A wait
+ *   keeps `running` true, so the completion watcher alone would stay silent.
  * - It stays silent when you are looking at that same session (page visible
  *   and focused, current selection matches).
  * - It notifies when the page is hidden, the window lost focus, or a
- *   different session finished.
+ *   different session finished or blocked.
  * - Clicking the toast focuses the window and opens that session.
  *
  * ## Host vs browser

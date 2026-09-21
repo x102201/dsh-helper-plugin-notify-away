@@ -4,7 +4,8 @@
  * The Web UI loads client plugins as ModuleLoader factories, not as ESM
  * graphs, so this file inlines the policy from `lib/policy.js` instead of
  * importing it. Keep the two in lockstep: `shouldNotify`, `isSubagent`,
- * `shouldTrack`, `isDocumentAway`, `watchCompletions`.
+ * `shouldTrack`, `isDocumentAway`, `bodyForWait`, `watchCompletions`,
+ * `watchPending`.
  *
  * Defaults match `resolveConfig(undefined)` in `lib/config.js`.
  *
@@ -23,6 +24,12 @@ window.__ModuleLoader__.load({
 
     const PLUGIN_NAME = 'dsh-helper-plugin-notify-away';
     const DEFAULT_BODY = 'Task finished.';
+    const WAIT_BODY = 'Waiting for you.';
+    const WAIT_BODY_BY_KIND = Object.freeze({
+      approval: 'Waiting for approval',
+      question: 'Waiting for answer',
+      'plan-review': 'Plan awaiting review',
+    });
     const TAG_PREFIX = 'notify-away:';
     const ONLY_WHEN_AWAY = true;
     const INCLUDE_SUBAGENTS = false;
@@ -47,6 +54,20 @@ window.__ModuleLoader__.load({
       if (doc.appFocused === true) return false;
       if (typeof doc.hasFocus === 'function' && !doc.hasFocus()) return true;
       return false;
+    }
+
+    function bodyForWait(interaction) {
+      if (interaction && typeof interaction.reason === 'string') {
+        const reason = interaction.reason.trim();
+        if (reason) return reason;
+      }
+      const questions = interaction && Array.isArray(interaction.questions) ? interaction.questions : [];
+      if (questions.length > 0) {
+        const text = typeof questions[0]?.question === 'string' ? questions[0].question.trim() : '';
+        if (text) return text;
+      }
+      const kind = interaction && typeof interaction.kind === 'string' ? interaction.kind : '';
+      return WAIT_BODY_BY_KIND[kind] ?? WAIT_BODY;
     }
 
     function watchCompletions(list, notify, isAway, options) {
@@ -85,6 +106,54 @@ window.__ModuleLoader__.load({
       return list.subscribe(onChange);
     }
 
+    function watchPending(list, pendingStore, notify, isAway, options) {
+      const onlyWhenAway = options.onlyWhenAway !== false;
+      const includeSubagents = options.includeSubagents === true;
+      const prevKeys = new Map();
+
+      const onChange = () => {
+        const snapshot = list.getSnapshot();
+        const byId = snapshot.byId ?? {};
+        const current = snapshot.current;
+        const pending = pendingStore.getSnapshot() ?? new Map();
+        const ids = new Set([...Object.keys(byId), ...prevKeys.keys()]);
+        for (const id of pending.keys()) ids.add(id);
+
+        for (const id of ids) {
+          const summary = byId[id];
+          if (summary === undefined) {
+            prevKeys.delete(id);
+            continue;
+          }
+          const interaction = pending.get(id);
+          const nextKey = interaction && typeof interaction.key === 'string' ? interaction.key : undefined;
+          if (!prevKeys.has(id)) {
+            prevKeys.set(id, nextKey);
+            continue;
+          }
+          const prevKey = prevKeys.get(id);
+          if (
+            nextKey !== undefined
+            && nextKey !== prevKey
+            && shouldTrack(summary, includeSubagents)
+            && shouldNotify({ sessionId: summary.id, current, away: isAway(), onlyWhenAway })
+          ) {
+            notify({ summary, interaction });
+          }
+          prevKeys.set(id, nextKey);
+        }
+      };
+
+      onChange();
+      const stopList = list.subscribe(onChange);
+      const stopPending = pendingStore.subscribe(onChange);
+      return () => {
+        stopList();
+        stopPending();
+        prevKeys.clear();
+      };
+    }
+
     function hasHelperHost() {
       try {
         return typeof window !== 'undefined'
@@ -94,12 +163,16 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function payloadFor(summary) {
+    function sessionTitle(summary) {
       const title = String(summary.displayTitle || summary.id || 'Session').trim();
+      return title || 'Session';
+    }
+
+    function payloadFor(summary, body) {
       return {
         kind: 'notify-away',
-        title: title || 'Session',
-        body: DEFAULT_BODY,
+        title: sessionTitle(summary),
+        body,
         sessionId: summary.id,
         tag: TAG_PREFIX + summary.id,
       };
@@ -114,24 +187,23 @@ window.__ModuleLoader__.load({
       if (typeof ctx.sessions?.open === 'function') ctx.sessions.open(sessionId);
     }
 
-    function postToHelper(summary) {
+    function postToHelper(payload) {
       try {
-        window.chrome.webview.postMessage(JSON.stringify(payloadFor(summary)));
+        window.chrome.webview.postMessage(JSON.stringify(payload));
         return true;
       } catch {
         return false;
       }
     }
 
-    function showBrowserNotification(summary, ctx) {
+    function showBrowserNotification(payload, ctx) {
       if (typeof Notification === 'undefined') return;
       const fire = () => {
-        const payload = payloadFor(summary);
         const notification = new Notification(payload.title, {
           body: payload.body,
           tag: payload.tag,
         });
-        notification.onclick = () => openSession(ctx, summary.id);
+        notification.onclick = () => openSession(ctx, payload.sessionId);
       };
       if (Notification.permission === 'granted') {
         fire();
@@ -149,9 +221,9 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function showCompletionNotification(summary, ctx) {
-      if (hasHelperHost() && postToHelper(summary)) return;
-      showBrowserNotification(summary, ctx);
+    function showNotification(payload, ctx) {
+      if (hasHelperHost() && postToHelper(payload)) return;
+      showBrowserNotification(payload, ctx);
     }
 
     function requestPermissionOnGesture() {
@@ -206,7 +278,41 @@ window.__ModuleLoader__.load({
       };
     }
 
+    function watchOptions() {
+      return { onlyWhenAway: ONLY_WHEN_AWAY, includeSubagents: INCLUDE_SUBAGENTS };
+    }
+
+    function isAway() {
+      return isDocumentAway(readAwayState());
+    }
+
+    function attachWaitWatcher(owner) {
+      return owner.effect(
+        () => {
+          const pendingStore = owner.uiSession && owner.uiSession.pendingInteractions;
+          if (
+            pendingStore === undefined
+            || typeof pendingStore.getSnapshot !== 'function'
+            || typeof pendingStore.subscribe !== 'function'
+          ) {
+            return () => {};
+          }
+          return watchPending(
+            owner.sessions.list,
+            pendingStore,
+            (event) => showNotification(payloadFor(event.summary, bodyForWait(event.interaction)), owner),
+            isAway,
+            watchOptions(),
+          );
+        },
+        'notify-away: wait watcher',
+      );
+    }
+
     exports.name = PLUGIN_NAME;
+    // Static inject stays `sessions` so boot matches the previously-working row.
+    // `uiSession` is provided later by the session UI package; wait for it via
+    // ctx.inject when Cordis offers that, otherwise read it if already present.
     exports.inject = ['sessions'];
     exports.apply = (ctx) => {
       ctx.effect(() => listenHelperClicks(ctx), 'notify-away: helper click');
@@ -214,12 +320,17 @@ window.__ModuleLoader__.load({
       ctx.effect(
         () => watchCompletions(
           ctx.sessions.list,
-          (summary) => showCompletionNotification(summary, ctx),
-          () => isDocumentAway(readAwayState()),
-          { onlyWhenAway: ONLY_WHEN_AWAY, includeSubagents: INCLUDE_SUBAGENTS },
+          (summary) => showNotification(payloadFor(summary, DEFAULT_BODY), ctx),
+          isAway,
+          watchOptions(),
         ),
         'notify-away: completion watcher',
       );
+      if (typeof ctx.inject === 'function') {
+        ctx.inject(['uiSession'], attachWaitWatcher);
+      } else {
+        attachWaitWatcher(ctx);
+      }
     };
 
     return module.exports;

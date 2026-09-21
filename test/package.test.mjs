@@ -122,12 +122,16 @@ test('the client bundle stays in lockstep with the tested policy and config defa
     'return away || current !== sessionId',
     "summary.origin === 'subagent' || summary.parentId !== undefined",
     "doc.visibilityState === 'hidden'",
+    'WAIT_BODY_BY_KIND',
+    'nextKey !== prevKey',
   ]) {
     assert.ok(policy.includes(needle), `lib/policy.js should contain ${JSON.stringify(needle)}`);
     assert.ok(client.includes(needle), `client.js should inline ${JSON.stringify(needle)}`);
   }
   assert.ok(config.includes("DEFAULT_BODY = 'Task finished.'"));
   assert.ok(client.includes("DEFAULT_BODY = 'Task finished.'"));
+  assert.ok(policy.includes("WAIT_BODY = 'Waiting for you.'"));
+  assert.ok(client.includes("WAIT_BODY = 'Waiting for you.'"));
   assert.ok(client.includes('ONLY_WHEN_AWAY = true'));
   assert.ok(client.includes('INCLUDE_SUBAGENTS = false'));
 });

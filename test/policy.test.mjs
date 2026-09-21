@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isDocumentAway, isSubagent, shouldNotify, shouldTrack, watchCompletions } from '../lib/policy.js';
-import { createFakeSessionList, summary } from '../test-support/harness.mjs';
+import { bodyForWait, isDocumentAway, isSubagent, shouldNotify, shouldTrack, watchCompletions, watchPending } from '../lib/policy.js';
+import { createFakePendingStore, createFakeSessionList, pending, summary } from '../test-support/harness.mjs';
 
 test('shouldNotify is silent only while looking at the session that just finished', () => {
   assert.equal(shouldNotify({ sessionId: 'a', current: 'a', away: false }), false);
@@ -179,5 +179,158 @@ test('the disposer unsubscribes', () => {
     byId: { a: summary({ id: 'a', running: false }) },
     current: 'a',
   });
+  assert.deepEqual(fired, []);
+});
+
+test('bodyForWait prefers the asker reason, then the first question, then kind copy', () => {
+  assert.equal(
+    bodyForWait(pending({ sessionId: 'a', kind: 'approval', reason: '  escalate sandbox to danger-full-access  ' })),
+    'escalate sandbox to danger-full-access',
+  );
+  assert.equal(
+    bodyForWait(pending({ sessionId: 'a', kind: 'question', questions: [{ question: ' Which model? ' }] })),
+    'Which model?',
+  );
+  assert.equal(bodyForWait(pending({ sessionId: 'a', kind: 'approval' })), 'Waiting for approval');
+  assert.equal(bodyForWait(pending({ sessionId: 'a', kind: 'question' })), 'Waiting for answer');
+  assert.equal(bodyForWait(pending({ sessionId: 'a', kind: 'plan-review' })), 'Plan awaiting review');
+  assert.equal(bodyForWait(pending({ sessionId: 'a', kind: 'future-block' })), 'Waiting for you.');
+  assert.equal(bodyForWait(undefined), 'Waiting for you.');
+});
+
+test('watchPending ignores the first observation, including an already-waiting session', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore([
+    ['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1' })],
+  ]);
+  watchPending(list, pendingStore, (event) => fired.push(event.interaction.key), () => true);
+  assert.deepEqual(fired, []);
+});
+
+test('watchPending fires once when a session newly waits and the user is away', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.interaction.key), () => true);
+  assert.deepEqual(fired, []);
+
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1' })]]);
+  assert.deepEqual(fired, ['ask-1']);
+
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1' })]]);
+  assert.deepEqual(fired, ['ask-1'], 'the same pending key is not another edge');
+});
+
+test('watchPending fires again when a replacement request uses a new key', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.interaction.key), () => true);
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1' })]]);
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-2' })]]);
+  assert.deepEqual(fired, ['ask-1', 'ask-2']);
+});
+
+test('watchPending stays silent when the user is looking at that session', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.interaction.key), () => false);
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'question', key: 'q-1' })]]);
+  assert.deepEqual(fired, []);
+});
+
+test('watchPending still fires when a background session waits while you watch another', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: {
+      a: summary({ id: 'a', running: false }),
+      b: summary({ id: 'b', running: true }),
+    },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.summary.id), () => false);
+  pendingStore.set([['b', pending({ sessionId: 'b', kind: 'plan-review', key: 'plan-1' })]]);
+  assert.deepEqual(fired, ['b']);
+});
+
+test('watchPending does not toast subagent waits by default', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: {
+      root: summary({ id: 'root', running: true }),
+      child: summary({ id: 'child', running: true, origin: 'subagent', parentId: 'root' }),
+    },
+    current: 'root',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.summary.id), () => true);
+  pendingStore.set([['child', pending({ sessionId: 'child', kind: 'approval', key: 'ask-1' })]]);
+  assert.deepEqual(fired, []);
+});
+
+test('watchPending toasts subagent waits when includeSubagents is on', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: {
+      child: summary({ id: 'child', running: true, origin: 'subagent', parentId: 'root' }),
+    },
+    current: 'root',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.summary.id), () => true, { includeSubagents: true });
+  pendingStore.set([['child', pending({ sessionId: 'child', kind: 'approval', key: 'ask-1' })]]);
+  assert.deepEqual(fired, ['child']);
+});
+
+test('watchPending toasts an unknown future pending kind the same way', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.interaction.kind), () => true);
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'future-block', key: 'x-1' })]]);
+  assert.deepEqual(fired, ['future-block']);
+});
+
+test('watchPending clearing a wait is not a notify edge', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.interaction.key), () => true);
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1' })]]);
+  pendingStore.set([]);
+  assert.deepEqual(fired, ['ask-1']);
+});
+
+test('the pending disposer unsubscribes', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  const stop = watchPending(list, pendingStore, (event) => fired.push(event.interaction.key), () => true);
+  stop();
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1' })]]);
   assert.deepEqual(fired, []);
 });

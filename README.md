@@ -4,17 +4,18 @@ English | [中文](README.zh.md)
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![dsh: 0.1.5-rc.2](https://img.shields.io/badge/dsh-0.1.5--rc.2-4b32c3)
-![tests: 45 passing](https://img.shields.io/badge/tests-45%20passing-brightgreen)
+![tests: 61 passing](https://img.shields.io/badge/tests-61%20passing-brightgreen)
 
-A **system-notification** plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`), modeled on Cursor's agent toast: stay silent while you watch the session that just finished, and raise an OS notification when you have switched away.
+A **system-notification** plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`), modeled on Cursor's agent toast: stay silent while you watch the session that just finished or blocked, and raise an OS notification when you have switched away.
 
 **Why it exists:** a long `dsh` turn is easy to miss if you have gone to another window. The Web UI already shows a green "done" dot in the sidebar when you are looking at it. This plugin covers the other case — you are not looking. In dsh-helper it asks the host to raise a system toast (`chrome.webview.postMessage`); in a system browser it uses the `Notification` API.
 
-**How it feels:** start a task, switch to another app or tab. When the root session goes idle, a toast named after that session appears. Click it to focus the Web UI and open that session. If you were already watching that session, nothing is raised.
+**How it feels:** start a task, switch to another app or tab. When the root session goes idle — or stops to wait for you — a toast named after that session appears. Click it to focus the Web UI and open that session. If you were already watching that session, nothing is raised.
 
 ```text
 watching this session, window focused     silent
 other window / hidden tab / other session  system notification
+                                           (finished *or* waiting on you)
 ```
 
 **Install (one line):**
@@ -31,13 +32,14 @@ dsh plugin --profile web add github:x102201/dsh-helper-plugin-notify-away
 | Piece | Behavior |
 |---|---|
 | Completion edge | Fires when a listed session's `running` bit flips to idle. The first observation only records the bit, so a session already idle at load never toasts. |
-| Away gate | Silent only while you are looking at **that** session: the page is visible, the window is focused, and `list.current` matches. Hidden tab, unfocused window, or a background session finishing → toast. |
+| Wait edge | Fires when `uiSession.pendingInteractions` newly carries a request for that session. A wait keeps `running` true, so the completion watcher would stay silent. Known kinds: approval, question, plan review. Any later kind still toasts. |
+| Away gate | Silent only while you are looking at **that** session: the page is visible, the window is focused, and `list.current` matches. Hidden tab, unfocused window, or a background session finishing / blocking → toast. |
 | Root sessions | Subagent rows (`origin: 'subagent'` or a `parentId`) are ignored, so parallel children do not flood the tray. |
 | Permission | In dsh-helper: none. In a system browser: asked on the first click or keystroke (Safari only grants gesture-bound requests). |
 | Dedup | Each toast is tagged `notify-away:<sessionId>`, so a repeat replaces the previous instead of stacking. |
 | Click | Focuses the window and calls `ctx.sessions.open(sessionId)`. Helper click-back is the `dsh-helper-notify-click` event. |
 
-The plugin writes **no session-event vocabulary of its own**. It only reads the same sessions-list snapshot the sidebar reads.
+The plugin writes **no session-event vocabulary of its own**. It only reads the same sessions-list snapshot and pending-interaction map the sidebar reads. It does not answer approval or question waterfalls.
 
 ## Install
 
@@ -101,7 +103,7 @@ The browser half still needs the package resolvable as `dsh-helper-plugin-notify
 dsh --profile web --dump-config | grep -A2 notify-away
 ```
 
-Then start a task in the Web UI, switch to another window, and wait for idle: a system notification titled with the session name should appear. Stay on that session with the window focused: nothing should appear.
+Then start a task in the Web UI, switch to another window, and wait for idle or a blocking prompt: a system notification titled with the session name should appear. Stay on that session with the window focused: nothing should appear.
 
 ### Uninstall
 
@@ -135,7 +137,8 @@ The host row validates these keys so a typo fails at boot. **The browser half cu
 ## How it works
 
 ```text
-sessions.list snapshot  ──►  running → idle edge
+sessions.list snapshot              ──►  running → idle edge
+uiSession.pendingInteractions       ──►  new wait key (approval / question / …)
                                     │
                          shouldNotify(away || current !== sessionId)
                                     │
@@ -152,10 +155,10 @@ sessions.list snapshot  ──►  running → idle edge
 
 ## Limits
 
-- Completions only. Waiting-for-approval / `ask_user_question` toasts are not in this version.
+- Completions and waits use the same toast tag per session, so a later event replaces the previous one instead of stacking.
 - In a system browser the permission is browser-owned: if the prompt is denied, that origin stays silent. dsh-helper's panel uses `postMessage` instead and is not gated on this.
 - Cancelling a running turn also goes idle, so a cancelled task still triggers a "finished" toast.
-- The host-row `config` mapping is validated but not yet pushed to the browser half.
+- The host-row `config` mapping is validated but not yet pushed to the browser half. Wait-toast copy is not configurable.
 
 ## Compatibility
 
@@ -165,7 +168,7 @@ Written against **dsh `0.1.5-rc.2`**. Seams used:
 |---|---|
 | Host row `name: ./index.js` + `dsh.bundle.patch` | `link:` / `github:` install |
 | `package.json` `dsh.client` (`platform: web`, `inject: [@deepseek-ai/dsh-client-runtime]`) | Web UI scans and serves `./client` |
-| Client `inject: ['sessions']` | `ctx.sessions.list` snapshot + `ctx.sessions.open` |
+| Client `inject: ['sessions']` | `ctx.sessions.list` snapshot + `ctx.sessions.open`; wait watcher attaches to `ctx.uiSession.pendingInteractions` |
 | `chrome.webview.postMessage` | dsh-helper panel → OS toast (no Notification permission) |
 | Browser `Notification` API | fallback OS banner when the UI is not inside helper |
 
@@ -183,7 +186,7 @@ index.js                     Cordis host plugin: config validation + ready log
 client.js                    ModuleLoader factory: away gate + postMessage / Notification
 cordis.patch.yml             bundle patch: insert the host row
 lib/config.js                config schema and defaults
-lib/policy.js                pure shouldNotify / running→idle fold (tested)
+lib/policy.js                pure shouldNotify / running→idle / wait-key fold (tested)
 examples/                    profile overlay and standalone host-row overlay
 scripts/run-tests.mjs        single-process test runner
 test/                        config, policy, package shape, host wiring, client factory

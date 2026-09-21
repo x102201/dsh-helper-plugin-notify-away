@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
-import { createFakeSessionList, summary } from '../test-support/harness.mjs';
+import { createFakePendingStore, createFakeSessionList, pending, summary } from '../test-support/harness.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -91,6 +91,7 @@ function mountClient({
   focused = false,
   hidden = false,
   list,
+  pendingStore,
   helper = false,
   appFocused,
 } = {}) {
@@ -121,14 +122,18 @@ function mountClient({
     list: list ?? createFakeSessionList({ byId: {}, current: undefined }),
     open: (id) => opened.push(id),
   };
+  const uiSession = {
+    pendingInteractions: pendingStore ?? createFakePendingStore(),
+  };
   const ctx = {
     sessions,
+    uiSession,
     effect(callback) {
       return callback();
     },
   };
   exported.apply(ctx);
-  return { exported, window, document, FakeNotification, instances, opened, sessions, ctx, posted };
+  return { exported, window, document, FakeNotification, instances, opened, sessions, uiSession, ctx, posted };
 }
 
 test('the client factory exports the browser plugin shape', () => {
@@ -282,4 +287,126 @@ test('a helper click event focuses the window and opens that session', () => {
   window.dispatchEvent({ type: 'dsh-helper-notify-click', detail: { sessionId: 'sess-1' } });
   assert.equal(window.focused, true);
   assert.deepEqual(opened, ['sess-1']);
+});
+
+test('a new approval wait while away raises a toast with the asker reason', () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'Install plugins', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  const { instances } = mountClient({ focused: false, list, pendingStore });
+  assert.equal(instances.length, 0);
+
+  pendingStore.set([['a', pending({
+    sessionId: 'a',
+    kind: 'approval',
+    key: 'ask-1',
+    reason: 'escalate sandbox to danger-full-access: write into DSH_HOME',
+  })]]);
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].title, 'Install plugins');
+  assert.equal(instances[0].options.body, 'escalate sandbox to danger-full-access: write into DSH_HOME');
+  assert.equal(instances[0].options.tag, 'notify-away:a');
+});
+
+test('looking at the waiting session raises no wait toast', () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  const { instances } = mountClient({ focused: true, hidden: false, list, pendingStore });
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'question', key: 'q-1' })]]);
+  assert.equal(instances.length, 0);
+});
+
+test('a helper host posts a wait toast instead of using Notification', () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'Install plugins', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  const { instances, posted, FakeNotification } = mountClient({
+    permission: 'denied',
+    focused: false,
+    helper: true,
+    list,
+    pendingStore,
+  });
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'plan-review', key: 'plan-1' })]]);
+  assert.equal(instances.length, 0);
+  assert.equal(FakeNotification.requestPermissionCalls, 0);
+  assert.equal(posted.length, 1);
+  const payload = JSON.parse(posted[0]);
+  assert.equal(payload.kind, 'notify-away');
+  assert.equal(payload.title, 'Install plugins');
+  assert.equal(payload.body, 'Plan awaiting review');
+  assert.equal(payload.sessionId, 'a');
+  assert.equal(payload.tag, 'notify-away:a');
+});
+
+test('a missing uiSession pending store still allows completion toasts', () => {
+  const { exported, window, context } = loadClient();
+  const { FakeNotification, instances } = installNotification('granted');
+  context.Notification = FakeNotification;
+  window.Notification = FakeNotification;
+  context.document = {
+    visibilityState: 'visible',
+    hasFocus: () => false,
+  };
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
+    current: 'a',
+  });
+  exported.apply({
+    sessions: { list, open() {} },
+    uiSession: {},
+    effect(callback) {
+      return callback();
+    },
+  });
+  list.set({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: false }) },
+    current: 'a',
+  });
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].options.body, 'Task finished.');
+});
+
+test('ctx.inject waits for uiSession before watching pending interactions', () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'Install plugins', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  const { exported, window, context } = loadClient();
+  const { FakeNotification, instances } = installNotification('granted');
+  context.Notification = FakeNotification;
+  window.Notification = FakeNotification;
+  context.document = {
+    visibilityState: 'visible',
+    hasFocus: () => false,
+  };
+  let injected;
+  exported.apply({
+    sessions: { list, open() {} },
+    effect(callback) {
+      return callback();
+    },
+    inject(names, callback) {
+      injected = Array.from(names, (n) => String(n));
+      callback({
+        sessions: { list, open() {} },
+        uiSession: { pendingInteractions: pendingStore },
+        effect(fn) {
+          return fn();
+        },
+      });
+    },
+  });
+  assert.deepEqual(injected, ['uiSession']);
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1', reason: 'escalate sandbox' })]]);
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].options.body, 'escalate sandbox');
 });

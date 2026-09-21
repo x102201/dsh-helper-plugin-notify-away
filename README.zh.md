@@ -4,17 +4,18 @@
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![dsh: 0.1.5-rc.2](https://img.shields.io/badge/dsh-0.1.5--rc.2-4b32c3)
-![tests: 45 passing](https://img.shields.io/badge/tests-45%20passing-brightgreen)
+![tests: 61 passing](https://img.shields.io/badge/tests-61%20passing-brightgreen)
 
-给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）用的 **系统通知**插件：仿照 Cursor 的 Agent toast——你正在看刚结束的那场会话时保持安静，切到别的窗口才弹出系统通知。
+给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）用的 **系统通知**插件：仿照 Cursor 的 Agent toast——你正在看刚结束或卡住的那场会话时保持安静，切到别的窗口才弹出系统通知。
 
 **为什么需要它**：一轮 `dsh` 跑得久，人很容易切去干别的。人还在看的时候，侧栏自己的绿色 done 点已经够用。这个插件覆盖另一种情况——你不在看。在 dsh-helper 里通过 `chrome.webview.postMessage` 让宿主弹系统 toast；在系统浏览器里回退到 `Notification` API。
 
-**用起来是什么样**：开一个任务，切到别的应用或标签。根会话变成 idle 时，会弹出以该会话为标题的 toast。点它会聚焦 Web UI 并打开那场会话。如果你本来就在看那场、窗口也在前台，则什么都不弹。
+**用起来是什么样**：开一个任务，切到别的应用或标签。根会话变成 idle，或停下来等你时，会弹出以该会话为标题的 toast。点它会聚焦 Web UI 并打开那场会话。如果你本来就在看那场、窗口也在前台，则什么都不弹。
 
 ```text
 正在看这场会话，窗口有焦点     安静
 别的窗口 / 隐藏标签 / 别的会话  系统通知
+                               （结束了，或卡住等你）
 ```
 
 **一行安装：**
@@ -31,13 +32,14 @@ dsh plugin --profile web add github:x102201/dsh-helper-plugin-notify-away
 | 组成 | 行为 |
 |---|---|
 | 完成边沿 | 列出的会话 `running` 翻成 idle 时触发。第一次观察只记录该位，刷新时已经 idle 的会话不会弹。 |
-| 离开门闩 | 只在你正在看**那场**会话时保持安静：页面可见、窗口有焦点、且 `list.current` 对得上。隐藏标签、窗口失焦、或后台会话结束 → 弹 toast。 |
+| 等待边沿 | `uiSession.pendingInteractions` 里那场会话新出现一条请求时触发。等待期间 `running` 仍为 true，所以只看完成边沿会漏掉。已知种类：审批、提问、计划待审。以后新加的种类同样会弹。 |
+| 离开门闩 | 只在你正在看**那场**会话时保持安静：页面可见、窗口有焦点、且 `list.current` 对得上。隐藏标签、窗口失焦、或后台会话结束 / 卡住 → 弹 toast。 |
 | 根会话 | 子 Agent 行（`origin: 'subagent'` 或带 `parentId`）被忽略，避免并行子任务刷屏。 |
 | 权限 | 在 dsh-helper 里不需要。在系统浏览器里：第一次点击或按键时申请（Safari 只接受手势里的申请）。 |
 | 去重 | 每条 toast 带 `notify-away:<sessionId>` 标签，重复的会替换上一条而不是堆叠。 |
 | 点击 | 聚焦窗口，并调用 `ctx.sessions.open(sessionId)`。helper 点回来走 `dsh-helper-notify-click` 事件。 |
 
-插件**不写任何自有会话事件类型**。它只读侧栏用的那份会话列表快照。
+插件**不写任何自有会话事件类型**。它只读侧栏用的那份会话列表快照和 pending-interaction 表。它不回答审批或提问瀑布。
 
 ## 安装
 
@@ -101,7 +103,7 @@ dsh --profile web --patch <checkout>/examples/standalone.patch.yml
 dsh --profile web --dump-config | grep -A2 notify-away
 ```
 
-然后在 Web 界面开一个任务，切到别的窗口，等到 idle：应该出现以会话名为标题的系统通知。盯着那场会话、窗口也在前台：不应出现。
+然后在 Web 界面开一个任务，切到别的窗口，等到 idle 或卡住等人：应该出现以会话名为标题的系统通知。盯着那场会话、窗口也在前台：不应出现。
 
 ### 卸载
 
@@ -135,13 +137,14 @@ host 行会校验这些键，打错会在启动时失败。**浏览器半边目�
 ## 工作原理
 
 ```text
-sessions.list 快照  ──►  running → idle 边沿
-                              │
-                   shouldNotify(away || current !== sessionId)
-                              │
+sessions.list 快照                    ──►  running → idle 边沿
+uiSession.pendingInteractions         ──►  新的等待 key（审批 / 提问 / …）
+                                    │
+                         shouldNotify(away || current !== sessionId)
+                                    │
           chrome.webview.postMessage  ──►  helper 系统 toast
                      或 Notification  ──►  浏览器系统横幅
-                              │
+                                    │
                    点击  ──►  window.focus + sessions.open
 ```
 
@@ -152,10 +155,10 @@ sessions.list 快照  ──►  running → idle 边沿
 
 ## 边界
 
-- 只覆盖完成。等待审批 / `ask_user_question` 的 toast 不在这一版。
+- 完成和等待共用同一条会话 toast 标签，后到的会替换前一条而不是堆叠。
 - 在系统浏览器里权限由浏览器持有：提示被拒绝后，该源上插件会保持安静。dsh-helper 面板走 `postMessage`，不受这项权限限制。
 - 取消一轮也会变成 idle，所以取消的任务仍会弹出「已完成」toast。
-- host 行的 `config` 会校验，但还不会推到浏览器半边。
+- host 行的 `config` 会校验，但还不会推到浏览器半边。等待 toast 的文案暂不可配。
 
 ## 兼容性
 
@@ -165,7 +168,7 @@ sessions.list 快照  ──►  running → idle 边沿
 |---|---|
 | host 行 `name: ./index.js` + `dsh.bundle.patch` | `link:` / `github:` 安装 |
 | `package.json` 的 `dsh.client`（`platform: web`，`inject: [@deepseek-ai/dsh-client-runtime]`） | Web UI 扫描并提供 `./client` |
-| 客户端 `inject: ['sessions']` | `ctx.sessions.list` 快照 + `ctx.sessions.open` |
+| 客户端 `inject: ['sessions']` | `ctx.sessions.list` 快照 + `ctx.sessions.open`；等待 watcher 挂到 `ctx.uiSession.pendingInteractions` |
 | `chrome.webview.postMessage` | dsh-helper 面板 → 系统 toast（不需要 Notification 权限） |
 | 浏览器 `Notification` API | 不在 helper 里时的回退系统横幅 |
 
@@ -183,7 +186,7 @@ index.js                     Cordis host 插件：配置校验 + ready 日志
 client.js                    ModuleLoader 工厂：离开门闩 + postMessage / Notification
 cordis.patch.yml             bundle 补丁：插入 host 行
 lib/config.js                配置 schema 与默认值
-lib/policy.js                纯 shouldNotify / running→idle 折叠（已单测）
+lib/policy.js                纯 shouldNotify / running→idle / 等待 key 折叠（已单测）
 examples/                    profile 覆盖层与可携带的 host 行覆盖层
 scripts/run-tests.mjs        单进程测试运行器
 test/                        配置、策略、包形态、host 接线、client 工厂

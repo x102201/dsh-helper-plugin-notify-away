@@ -1,6 +1,7 @@
 /**
  * Test harness: a minimal stand-in for the Cordis tree the host row mounts into,
- * plus a sessions-list observable the browser half can watch.
+ * plus a sessions-list observable and a pending-interactions map the browser
+ * half can watch.
  *
  * @module test-support/harness
  */
@@ -102,5 +103,44 @@ export function summary(fields) {
     updatedAt: 0,
     ...fields.parentId !== undefined ? { parentId: fields.parentId } : {},
     ...fields.origin !== undefined ? { origin: fields.origin } : {},
+  };
+}
+
+/**
+ * A mutable pending-interactions observable matching `uiSession.pendingInteractions`.
+ *
+ * @param {Iterable<[string, object]>} [initial] - starting `sessionId → interaction` entries.
+ * @returns {object} `{ getSnapshot, subscribe, set }`.
+ */
+export function createFakePendingStore(initial = []) {
+  let snapshot = new Map(initial);
+  const listeners = new Set();
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    set(next) {
+      snapshot = next instanceof Map ? next : new Map(next);
+      for (const listener of listeners) listener();
+    },
+  };
+}
+
+/**
+ * One pending UI interaction (approval, question, plan-review, or a later kind).
+ *
+ * @param {object} fields - interaction fields.
+ * @returns {object} a SessionPendingInteraction-shaped object.
+ */
+export function pending(fields) {
+  return {
+    sessionId: fields.sessionId,
+    kind: fields.kind ?? 'approval',
+    key: fields.key ?? `${fields.kind ?? 'approval'}:${fields.sessionId}`,
+    ...fields.reason !== undefined ? { reason: fields.reason } : {},
+    ...fields.questions !== undefined ? { questions: fields.questions } : {},
+    ...fields.toolName !== undefined ? { toolName: fields.toolName } : {},
   };
 }
