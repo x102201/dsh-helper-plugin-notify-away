@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![dsh: 0.1.5-rc.2](https://img.shields.io/badge/dsh-0.1.5--rc.2-4b32c3)
-![tests: 61 passing](https://img.shields.io/badge/tests-61%20passing-brightgreen)
+![tests: 83 passing](https://img.shields.io/badge/tests-83%20passing-brightgreen)
 
 A **system-notification** plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`), modeled on Cursor's agent toast: stay silent while you watch the session that just finished or blocked, and raise an OS notification when you have switched away.
 
@@ -32,7 +32,7 @@ dsh plugin --profile web add github:x102201/dsh-helper-plugin-notify-away
 | Piece | Behavior |
 |---|---|
 | Completion edge | Fires when a listed session's `running` bit flips to idle. The first observation only records the bit, so a session already idle at load never toasts. |
-| Wait edge | Fires when `uiSession.pendingInteractions` newly carries a request for that session. A wait keeps `running` true, so the completion watcher would stay silent. Known kinds: approval, question, plan review. Any later kind still toasts. |
+| Wait edge | Fires when `uiSession.pendingInteractions` newly carries a request for that session. A wait keeps `running` true, so the completion watcher would stay silent. Known kinds: approval, question, plan review. Any later kind still toasts (`otherWait`). Each kind can be turned off in config. |
 | Away gate | Silent only while you are looking at **that** session in **this** instance: the panel is on screen, the helper is in front, and `list.current` matches. Hidden tab, another instance, unfocused window, or a background session finishing / blocking → toast. |
 | Root sessions | Subagent rows (`origin: 'subagent'` or a `parentId`) are ignored, so parallel children do not flood the tray. |
 | Permission | In dsh-helper: none. In a system browser: asked on the first click or keystroke (Safari only grants gesture-bound requests). |
@@ -113,7 +113,9 @@ dsh plugin --profile web remove dsh-helper-plugin-notify-away
 
 ## Configuration
 
-All keys are optional; an empty mapping uses the defaults. Config is validated at load: unknown keys and wrong types fail boot instead of being ignored.
+All keys are optional; an empty mapping uses the defaults (every notification kind **on**). **The intended way to change them is Settings → 插件 → 插件配置**, where this plugin appears as **离开时通知** with a checkbox per kind.
+
+The host row also validates the same keys at load (unknown keys and wrong types fail boot). A patch can pin deployment defaults; the settings page writes user overrides to `$DSH_HOME/settings.yaml` and they take effect immediately.
 
 ```yaml
 - id: notify-away
@@ -121,6 +123,11 @@ All keys are optional; an empty mapping uses the defaults. Config is validated a
     onlyWhenAway: true
     includeSubagents: false
     body: Task finished.
+    completion: true
+    approval: true
+    question: true
+    planReview: true
+    otherWait: true
 ```
 
 | Key | Type | Default | Meaning |
@@ -128,11 +135,20 @@ All keys are optional; an empty mapping uses the defaults. Config is validated a
 | `onlyWhenAway` | boolean | `true` | Suppress the toast while you are looking at the session that just finished. |
 | `includeSubagents` | boolean | `false` | Also toast when a child agent goes idle. |
 | `title` | string | *(session display title)* | Optional static toast title. |
-| `body` | string | `Task finished.` | Toast body copy. |
+| `body` | string | `Task finished.` | Toast body copy for a completion. |
+| `completion` | boolean | `true` | Toast when a session goes `running → idle`. Cancelled turns also idle. |
+| `approval` | boolean | `true` | Toast on pending kind `approval`. |
+| `question` | boolean | `true` | Toast on pending kind `question`. |
+| `planReview` | boolean | `true` | Toast on pending kind `plan-review`. |
+| `otherWait` | boolean | `true` | Toast on any later pending kind the sidebar does not name yet. |
+
+Omit a kind (or leave it `true`) to keep it on. Set it to `false` to silence that kind only.
 
 A patch replaces the targeted row's whole `config` mapping; omitted keys fall back to the defaults. Put overrides in the profile's `cordis.patch.yml`, or see [`examples/profile-patch.yml`](examples/profile-patch.yml).
 
-The host row validates these keys so a typo fails at boot. **The browser half currently uses the same defaults** (it cannot read host-row config without an RPC). Leave the mapping empty unless you are pinning the documented defaults on purpose.
+The settings page is the live switch: Host `installSection('notify-away')` serves the namespace, and the browser half registers a `settings.plugin.item` card. Saving writes the user layer (not the cordis row). `window.__dshHelperNotifyAway` remains an emergency overlay on top of that.
+
+Three things keep that card on screen. The Host namespace has to be served by `settings.describe` (every registered namespace is). The card's store has to hand React a **reference-stable** snapshot: the renderer binds it through `useSyncExternalStore`, so a store that builds a new object per call re-renders forever until React throws — the slot's error boundary then hides the card and the console says `slot entry crashed in 'settings.plugin.item'`. And the fiber that registers the card injects `slots` and `settingsScope` only, so every ambient service it touches must be read with the non-strict `ctx.get(name)` accessor: cordis throws `cannot get property "locale" without inject` on `ctx.locale`, and a throw before `slots.register` means no card at all (that error is the only trace).
 
 ## How it works
 
@@ -157,8 +173,8 @@ uiSession.pendingInteractions       ──►  new wait key (approval / question
 
 - Completions and waits use the same toast tag per session, so a later event replaces the previous one instead of stacking.
 - In a system browser the permission is browser-owned: if the prompt is denied, that origin stays silent. dsh-helper's panel uses `postMessage` instead and is not gated on this.
-- Cancelling a running turn also goes idle, so a cancelled task still triggers a "finished" toast.
-- The host-row `config` mapping is validated but not yet pushed to the browser half. Wait-toast copy is not configurable.
+- Cancelling a running turn also goes idle, so a cancelled task still triggers a "finished" toast unless `completion` is off.
+- Wait-toast copy is not configurable.
 
 ## Compatibility
 
@@ -167,7 +183,7 @@ Written against **dsh `0.1.5-rc.2`**. Seams used:
 | Seam | Use |
 |---|---|
 | Host row `name: ./index.js` + `dsh.bundle.patch` | `link:` / `github:` install |
-| `package.json` `dsh.client` (`platform: web`, `inject: [@deepseek-ai/dsh-client-runtime]`) | Web UI scans and serves `./client` |
+| `package.json` `dsh.client` (`platform: web`, `inject: [@deepseek-ai/dsh-client-runtime, @deepseek-ai/dsh-client-ui-settings-plugins]`) | Web UI scans and serves `./client`, after the Plugins settings section declares `settings.plugin.item` |
 | Client `inject: ['sessions']` | `ctx.sessions.list` snapshot + `ctx.sessions.open`; wait watcher attaches to `ctx.uiSession.pendingInteractions` |
 | `chrome.webview.postMessage` | dsh-helper panel → OS toast (no Notification permission) |
 | Browser `Notification` API | fallback OS banner when the UI is not inside helper |
@@ -186,6 +202,7 @@ index.js                     Cordis host plugin: config validation + ready log
 client.js                    ModuleLoader factory: away gate + postMessage / Notification
 cordis.patch.yml             bundle patch: insert the host row
 lib/config.js                config schema and defaults
+lib/schema.js                settings namespace schema (schemastery from the profile, or a fallback)
 lib/policy.js                pure shouldNotify / running→idle / wait-key fold (tested)
 examples/                    profile overlay and standalone host-row overlay
 scripts/run-tests.mjs        single-process test runner

@@ -62,7 +62,13 @@ export function createFakeCtx(options = {}) {
         delete provided[serviceName];
       };
     },
+    inject(names, callback) {
+      if (options.settings && names.includes('settings')) {
+        callback({ ...ctx, settings: options.settings });
+      }
+    },
   };
+  if (options.settings) ctx.settings = options.settings;
   return ctx;
 }
 

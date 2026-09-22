@@ -13,9 +13,10 @@
 # *inserts* the row rather than targeting the bundle's row, it must state every
 # key it wants; everything omitted keeps the plugin's default.
 #
-# The host row validates these keys at boot. The browser half currently uses
-# the same defaults (no RPC yet), so leave the mapping empty unless you are
-# pinning the documented defaults on purpose.
+# The host row validates these keys at boot. Event kinds default to on.
+# The browser half uses the same defaults, plus apply() config when the
+# loader passes it, plus window.__dshHelperNotifyAway. Leave the mapping
+# empty unless you are pinning documented defaults or turning a kind off.
 
 - insert:
     - id: notify-away
@@ -24,3 +25,8 @@
         onlyWhenAway: true
         includeSubagents: false
         body: Task finished.
+        completion: true
+        approval: true
+        question: true
+        planReview: true
+        otherWait: true

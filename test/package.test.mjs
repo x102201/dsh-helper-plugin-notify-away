@@ -73,6 +73,10 @@ test('the manifest exposes the plugin entry, the client bundle, and its bundle p
   assert.equal(manifest.dsh.client.platform, 'web');
   assert.equal(manifest.dsh.client.immediately, true);
   assert.ok(manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-runtime'));
+  assert.ok(
+    manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-settings-plugins'),
+    'the client plugin must boot after the 插件配置 tab so settings.plugin.item exists',
+  );
   for (const shipped of ['index.js', 'client.js', 'lib', 'cordis.patch.yml']) {
     assert.ok(manifest.files.includes(shipped), `${shipped} must be packed for a github: install`);
   }
@@ -97,7 +101,17 @@ test('the standalone overlay points at the plugin entry it sits beside', () => {
 
 test('the config keys documented in the bundle patch are the ones the loader accepts', () => {
   const patch = readFileSync(join(ROOT, manifest.dsh.bundle.patch), 'utf8');
-  const documented = ['onlyWhenAway', 'includeSubagents', 'title', 'body'];
+  const documented = [
+    'onlyWhenAway',
+    'includeSubagents',
+    'title',
+    'body',
+    'completion',
+    'approval',
+    'question',
+    'planReview',
+    'otherWait',
+  ];
   const source = readFileSync(join(ROOT, 'lib', 'config.js'), 'utf8');
   for (const key of documented) {
     assert.ok(patch.includes(key), `the bundle patch should document ${key}`);
@@ -124,7 +138,9 @@ test('the client bundle stays in lockstep with the tested policy and config defa
     "doc.visibilityState === 'hidden'",
     'doc.panelVisible === false',
     'WAIT_BODY_BY_KIND',
+    'WAIT_EVENT_BY_KIND',
     'nextKey !== prevKey',
+    'options[event] !== false',
   ]) {
     assert.ok(policy.includes(needle), `lib/policy.js should contain ${JSON.stringify(needle)}`);
     assert.ok(client.includes(needle), `client.js should inline ${JSON.stringify(needle)}`);
@@ -135,6 +151,12 @@ test('the client bundle stays in lockstep with the tested policy and config defa
   assert.ok(client.includes("WAIT_BODY = 'Waiting for you.'"));
   assert.ok(client.includes('ONLY_WHEN_AWAY = true'));
   assert.ok(client.includes('INCLUDE_SUBAGENTS = false'));
+  assert.ok(client.includes("EVENT_KEYS = ['completion', 'approval', 'question', 'planReview', 'otherWait']"));
+  assert.ok(config.includes("'completion'"));
+  assert.ok(client.includes("window.__dshHelperNotifyAway"));
+  assert.ok(client.includes("settings.plugin.item"));
+  assert.ok(client.includes("SETTINGS_NAMESPACE = 'notify-away'"));
+  assert.ok(config.includes("SETTINGS_NAMESPACE = 'notify-away'"));
 });
 
 test('the shipped docs exist for both languages', () => {

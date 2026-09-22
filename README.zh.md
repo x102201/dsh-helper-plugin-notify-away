@@ -4,7 +4,7 @@
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![dsh: 0.1.5-rc.2](https://img.shields.io/badge/dsh-0.1.5--rc.2-4b32c3)
-![tests: 61 passing](https://img.shields.io/badge/tests-61%20passing-brightgreen)
+![tests: 83 passing](https://img.shields.io/badge/tests-83%20passing-brightgreen)
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）用的 **系统通知**插件：仿照 Cursor 的 Agent toast——你正在看刚结束或卡住的那场会话时保持安静，切到别的窗口才弹出系统通知。
 
@@ -32,7 +32,7 @@ dsh plugin --profile web add github:x102201/dsh-helper-plugin-notify-away
 | 组成 | 行为 |
 |---|---|
 | 完成边沿 | 列出的会话 `running` 翻成 idle 时触发。第一次观察只记录该位，刷新时已经 idle 的会话不会弹。 |
-| 等待边沿 | `uiSession.pendingInteractions` 里那场会话新出现一条请求时触发。等待期间 `running` 仍为 true，所以只看完成边沿会漏掉。已知种类：审批、提问、计划待审。以后新加的种类同样会弹。 |
+| 等待边沿 | `uiSession.pendingInteractions` 里那场会话新出现一条请求时触发。等待期间 `running` 仍为 true，所以只看完成边沿会漏掉。已知种类：审批、提问、计划待审。以后新加的种类同样会弹（`otherWait`）。每种都可以在配置里关掉。 |
 | 离开门闩 | 只在你正在看**这个实例里的那场**会话时保持安静：面板在屏幕上、helper 在前台、且 `list.current` 对得上。隐藏标签、另一个实例、窗口失焦、或后台会话结束 / 卡住 → 弹 toast。 |
 | 根会话 | 子 Agent 行（`origin: 'subagent'` 或带 `parentId`）被忽略，避免并行子任务刷屏。 |
 | 权限 | 在 dsh-helper 里不需要。在系统浏览器里：第一次点击或按键时申请（Safari 只接受手势里的申请）。 |
@@ -113,7 +113,9 @@ dsh plugin --profile web remove dsh-helper-plugin-notify-away
 
 ## 配置
 
-所有键都可选，什么都不写就用默认值。配置在加载期校验：未知键、类型错误都会让启动直接失败，而不是默默忽略。
+所有键都可选，什么都不写就用默认值（每种通知**全开**）。**改这些开关请走 设置 → 插件 → 插件配置**，本插件会出现一张 **离开时通知** 卡片，每种通知一个勾选框。
+
+host 行也会在加载时校验同一组键（未知键、类型错误会让启动失败）。补丁可以钉住部署默认值；设置页把用户覆盖写进 `$DSH_HOME/settings.yaml`，保存后立刻生效。
 
 ```yaml
 - id: notify-away
@@ -121,6 +123,11 @@ dsh plugin --profile web remove dsh-helper-plugin-notify-away
     onlyWhenAway: true
     includeSubagents: false
     body: Task finished.
+    completion: true
+    approval: true
+    question: true
+    planReview: true
+    otherWait: true
 ```
 
 | 键 | 类型 | 默认值 | 含义 |
@@ -128,11 +135,20 @@ dsh plugin --profile web remove dsh-helper-plugin-notify-away
 | `onlyWhenAway` | boolean | `true` | 正在看刚结束的那场会话时不弹。 |
 | `includeSubagents` | boolean | `false` | 子 Agent idle 时是否也弹。 |
 | `title` | string | *（会话显示名）* | 可选的固定 toast 标题。 |
-| `body` | string | `Task finished.` | toast 正文。 |
+| `body` | string | `Task finished.` | 完成事件的 toast 正文。 |
+| `completion` | boolean | `true` | 会话 `running → idle` 时弹。取消一轮也会 idle。 |
+| `approval` | boolean | `true` | pending 种类 `approval`。 |
+| `question` | boolean | `true` | pending 种类 `question`。 |
+| `planReview` | boolean | `true` | pending 种类 `plan-review`。 |
+| `otherWait` | boolean | `true` | 侧栏尚未命名的后续 pending 种类。 |
+
+省略某个种类（或写成 `true`）表示继续弹；写成 `false` 只关掉那一种。
 
 覆盖配置写在 profile 自己的 `cordis.patch.yml`，或参考 [`examples/profile-patch.yml`](examples/profile-patch.yml)。补丁会**整体替换**目标行的 `config`，省略的键回落到默认值。
 
-host 行会校验这些键，打错会在启动时失败。**浏览器半边目前用的是同一套默认值**（没有 RPC，读不到 host 行配置）。除非你只是想把文档里的默认值钉在配置里，否则把 mapping 留空即可。
+设置页才是运行时开关：host 用 `installSection('notify-away')` 登记 namespace，浏览器半边注册 `settings.plugin.item` 卡片。保存写入用户层，不是 cordis 行。`window.__dshHelperNotifyAway` 仍可作为压过它们的紧急覆盖。
+
+卡片要显示出来，三件事都得成立：host 的 namespace 必须被 `settings.describe` 提供（登记过就会）；卡片 store 必须给 React 一个**引用稳定**的快照——渲染器是通过 `useSyncExternalStore` 绑它的，每次调用都新建对象的 store 会一直重渲染到 React 抛错，随后插槽的 error boundary 把卡片藏掉，控制台会打 `slot entry crashed in 'settings.plugin.item'`；注册卡片的那条 fiber 只 inject 了 `slots` 和 `settingsScope`，所以它碰到的每个「环境服务」都必须用非严格访问器 `ctx.get(name)` 读——cordis 对 `ctx.locale` 会直接抛 `cannot get property "locale" without inject`，而这行在 `slots.register` 之前，一抛就完全没有卡片（控制台里那条报错就是唯一线索）。
 
 ## 工作原理
 
@@ -157,8 +173,8 @@ uiSession.pendingInteractions         ──►  新的等待 key（审批 / 提
 
 - 完成和等待共用同一条会话 toast 标签，后到的会替换前一条而不是堆叠。
 - 在系统浏览器里权限由浏览器持有：提示被拒绝后，该源上插件会保持安静。dsh-helper 面板走 `postMessage`，不受这项权限限制。
-- 取消一轮也会变成 idle，所以取消的任务仍会弹出「已完成」toast。
-- host 行的 `config` 会校验，但还不会推到浏览器半边。等待 toast 的文案暂不可配。
+- 取消一轮也会变成 idle，所以取消的任务仍会弹出「已完成」toast，除非关掉 `completion`。
+- 等待 toast 的文案暂不可配。
 
 ## 兼容性
 
@@ -167,7 +183,7 @@ uiSession.pendingInteractions         ──►  新的等待 key（审批 / 提
 | 接缝 | 用途 |
 |---|---|
 | host 行 `name: ./index.js` + `dsh.bundle.patch` | `link:` / `github:` 安装 |
-| `package.json` 的 `dsh.client`（`platform: web`，`inject: [@deepseek-ai/dsh-client-runtime]`） | Web UI 扫描并提供 `./client` |
+| `package.json` 的 `dsh.client`（`platform: web`，`inject: [@deepseek-ai/dsh-client-runtime, @deepseek-ai/dsh-client-ui-settings-plugins]`） | Web UI 扫描并提供 `./client`，排在「插件」设置分区声明 `settings.plugin.item` 之后 |
 | 客户端 `inject: ['sessions']` | `ctx.sessions.list` 快照 + `ctx.sessions.open`；等待 watcher 挂到 `ctx.uiSession.pendingInteractions` |
 | `chrome.webview.postMessage` | dsh-helper 面板 → 系统 toast（不需要 Notification 权限） |
 | 浏览器 `Notification` API | 不在 helper 里时的回退系统横幅 |
@@ -186,6 +202,7 @@ index.js                     Cordis host 插件：配置校验 + ready 日志
 client.js                    ModuleLoader 工厂：离开门闩 + postMessage / Notification
 cordis.patch.yml             bundle 补丁：插入 host 行
 lib/config.js                配置 schema 与默认值
+lib/schema.js                设置 namespace 的 schema（从 profile 解析 schemastery，否则用回退实现）
 lib/policy.js                纯 shouldNotify / running→idle / 等待 key 折叠（已单测）
 examples/                    profile 覆盖层与可携带的 host 行覆盖层
 scripts/run-tests.mjs        单进程测试运行器

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { bodyForWait, isDocumentAway, isSubagent, shouldNotify, shouldTrack, watchCompletions, watchPending } from '../lib/policy.js';
+import { bodyForWait, isDocumentAway, isEventEnabled, isSubagent, shouldNotify, shouldTrack, waitEvent, watchCompletions, watchPending } from '../lib/policy.js';
 import { createFakePendingStore, createFakeSessionList, pending, summary } from '../test-support/harness.mjs';
 
 test('shouldNotify is silent only while looking at the session that just finished', () => {
@@ -356,4 +356,52 @@ test('the pending disposer unsubscribes', () => {
   stop();
   pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1' })]]);
   assert.deepEqual(fired, []);
+});
+
+test('waitEvent maps known pending kinds and falls back to otherWait', () => {
+  assert.equal(waitEvent(pending({ kind: 'approval' })), 'approval');
+  assert.equal(waitEvent(pending({ kind: 'question' })), 'question');
+  assert.equal(waitEvent(pending({ kind: 'plan-review' })), 'planReview');
+  assert.equal(waitEvent(pending({ kind: 'future-block' })), 'otherWait');
+  assert.equal(waitEvent(undefined), 'otherWait');
+});
+
+test('isEventEnabled stays on unless the kind is explicitly false', () => {
+  assert.equal(isEventEnabled({}, 'completion'), true);
+  assert.equal(isEventEnabled({ completion: true }, 'completion'), true);
+  assert.equal(isEventEnabled({ completion: false }, 'completion'), false);
+  assert.equal(isEventEnabled({ approval: false }, 'question'), true);
+});
+
+test('watchCompletions stays silent when completion is off', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', running: true }) },
+    current: 'a',
+  });
+  watchCompletions(list, (row) => fired.push(row.id), () => true, { completion: false });
+  list.set({
+    byId: { a: summary({ id: 'a', running: false }) },
+    current: 'a',
+  });
+  assert.deepEqual(fired, []);
+});
+
+test('watchPending stays silent for kinds the user turned off', () => {
+  const fired = [];
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', running: true }) },
+    current: 'a',
+  });
+  const pendingStore = createFakePendingStore();
+  watchPending(list, pendingStore, (event) => fired.push(event.interaction.kind), () => true, {
+    approval: false,
+    otherWait: false,
+  });
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1' })]]);
+  assert.deepEqual(fired, []);
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'question', key: 'q-1' })]]);
+  assert.deepEqual(fired, ['question']);
+  pendingStore.set([['a', pending({ sessionId: 'a', kind: 'future-block', key: 'x-1' })]]);
+  assert.deepEqual(fired, ['question']);
 });

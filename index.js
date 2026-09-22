@@ -30,6 +30,8 @@
  * - makes the package an active Loader entry, which is what the client-module
  *   scanner reads `dsh.client` from;
  * - validates the row's `config` at boot so a typo fails loudly;
+ * - waits for `ctx.settings` and registers the `notify-away` namespace so
+ *   the Web UI 插件配置 page can show a card;
  * - logs one ready line.
  *
  * ## Zero runtime dependencies
@@ -46,18 +48,54 @@
  * @module dsh-helper-plugin-notify-away
  */
 
-import { PLUGIN_NAME, resolveConfig } from './lib/config.js';
+import { PLUGIN_NAME, SETTINGS_NAMESPACE, resolveConfig } from './lib/config.js';
+import { createEventSettingsSchema, eventSettingsEntry } from './lib/schema.js';
 
 /** Stable Cordis plugin name; also the row id in `cordis.patch.yml`. */
 export const name = PLUGIN_NAME;
 
 /**
- * No host services are required: the toast is dispatched from the browser
- * half (postMessage to helper, or Notification in a system browser).
- * An empty inject list still lets UI-less profiles compose the row so the
- * client scanner can see the package.
+ * Wait for `ctx.settings` before apply(). Nested `ctx.inject(['settings'])`
+ * from an empty-inject row is easy to miss: the 插件配置 tab only lists
+ * namespaces the Host actually registered. UI-less profiles without a
+ * settings provider simply never start this fiber; the Loader entry still
+ * exists so the client scanner can see `dsh.client`.
  */
-export const inject = [];
+export const inject = ['settings'];
+
+/**
+ * Register the 插件配置 namespace. Cordis with `inject: ['settings']` puts
+ * `ctx.settings` on this fiber; tests may also pass it directly.
+ *
+ * @param {object} ctx - host context with `settings.installSection`.
+ * @param {object} entry - event-flag subset used as the composition base.
+ */
+function installSettingsNamespace(ctx, entry) {
+  const settings = ctx.settings;
+  if (!settings || typeof settings.installSection !== 'function') {
+    const message = `${PLUGIN_NAME}: ctx.settings.installSection is missing; 插件配置 will not show this plugin`;
+    console.error(message);
+    ctx.logger?.warn?.(message);
+    return;
+  }
+  try {
+    settings.installSection(ctx, SETTINGS_NAMESPACE, createEventSettingsSchema(), entry, {
+      setSource: () => {},
+      onChange: () => {},
+    });
+    const message = `${PLUGIN_NAME}: settings namespace "${SETTINGS_NAMESPACE}" installed`;
+    console.error(message);
+    ctx.logger?.info?.('%s: settings namespace "%s" installed', PLUGIN_NAME, SETTINGS_NAMESPACE);
+  } catch (error) {
+    const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+    console.error(`${PLUGIN_NAME}: settings.installSection failed: ${detail}`);
+    ctx.logger?.warn?.(
+      '%s: settings.installSection failed (%s); 插件配置 will not show this plugin',
+      PLUGIN_NAME,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 /**
  * Mount the host half.
@@ -67,6 +105,7 @@ export const inject = [];
  */
 export function apply(ctx, rawConfig) {
   const config = resolveConfig(rawConfig);
+  const entry = eventSettingsEntry(config);
 
   try {
     ctx.provide('notifyAway', Object.freeze({
@@ -74,17 +113,26 @@ export function apply(ctx, rawConfig) {
       config,
     }));
   } catch (error) {
-    ctx.logger.warn(
+    ctx.logger?.warn?.(
       '%s: ctx.notifyAway could not be provided (%s); notifications still work in the Web UI',
       PLUGIN_NAME,
       error instanceof Error ? error.message : String(error),
     );
   }
 
-  ctx.logger.info(
-    '%s: notify-away ready (onlyWhenAway=%s, includeSubagents=%s)',
+  installSettingsNamespace(ctx, entry);
+
+  const ready = `${PLUGIN_NAME}: notify-away ready (onlyWhenAway=${config.onlyWhenAway}, includeSubagents=${config.includeSubagents}, completion=${config.completion}, approval=${config.approval}, question=${config.question}, planReview=${config.planReview}, otherWait=${config.otherWait})`;
+  console.error(ready);
+  ctx.logger?.info?.(
+    '%s: notify-away ready (onlyWhenAway=%s, includeSubagents=%s, completion=%s, approval=%s, question=%s, planReview=%s, otherWait=%s)',
     PLUGIN_NAME,
     config.onlyWhenAway,
     config.includeSubagents,
+    config.completion,
+    config.approval,
+    config.question,
+    config.planReview,
+    config.otherWait,
   );
 }

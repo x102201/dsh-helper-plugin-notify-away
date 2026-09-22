@@ -32,11 +32,21 @@
 #       onlyWhenAway: true
 #       includeSubagents: false
 #       body: Task finished.
+#       completion: true
+#       approval: true
+#       question: true
+#       planReview: true
+#       otherWait: true
 #
-# Accepted keys: onlyWhenAway, includeSubagents, title, body.
-# The host row validates these at load. The browser half currently uses the
-# same defaults (it cannot read host-row config without an RPC); keep the two
-# in lockstep or leave the mapping empty. See README.md.
+# Accepted keys: onlyWhenAway, includeSubagents, title, body,
+# completion, approval, question, planReview, otherWait.
+# Event kinds default to on; set a key to false to silence that toast.
+# The host row validates these at load. The browser half uses the same
+# defaults, merges apply()'s second argument when the loader passes it, and
+# lets window.__dshHelperNotifyAway overlay boolean event flags. The 插件配置
+# card is served by installSection('notify-away') plus a client
+# settings.plugin.item registration. Host YAML
+# does not reach the WebView without that overlay, the settings page, or an RPC. See README.md.
 
 - insert:
     - id: notify-away
