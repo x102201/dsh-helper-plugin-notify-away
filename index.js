@@ -12,10 +12,11 @@
  * - A toast also fires when that session newly waits on you (approval,
  *   question, plan review, or any later pending-interaction kind). A wait
  *   keeps `running` true, so the completion watcher alone would stay silent.
- * - It stays silent when you are looking at that same session (page visible
- *   and focused, current selection matches).
- * - It notifies when the page is hidden, the window lost focus, or a
- *   different session finished or blocked.
+ * - It stays silent when you are looking at that same session (this
+ *   instance's panel is showing, the helper is in front, current selection
+ *   matches).
+ * - It notifies when the page is hidden, another instance is on screen, the
+ *   window lost focus, or a different session finished or blocked.
  * - Clicking the toast focuses the window and opens that session.
  *
  * ## Host vs browser

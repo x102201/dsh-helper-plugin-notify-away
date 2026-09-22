@@ -48,6 +48,29 @@ test('isDocumentAway trusts helper appFocused over document.hasFocus', () => {
   );
 });
 
+test('isDocumentAway treats another instance on screen as away', () => {
+  assert.equal(
+    isDocumentAway({
+      visibilityState: 'visible',
+      hasFocus: () => true,
+      appFocused: true,
+      panelVisible: false,
+    }),
+    true,
+    'working in instance B: instance A is still "focused" to WebView2',
+  );
+  assert.equal(
+    isDocumentAway({
+      visibilityState: 'visible',
+      hasFocus: () => true,
+      appFocused: true,
+      panelVisible: true,
+    }),
+    false,
+    'this instance is the one on screen and helper is in front',
+  );
+});
+
 test('watchCompletions ignores the first observation, including an already-idle session', () => {
   const fired = [];
   const list = createFakeSessionList({

@@ -94,6 +94,7 @@ function mountClient({
   pendingStore,
   helper = false,
   appFocused,
+  panelVisible,
 } = {}) {
   const { exported, window, context } = loadClient();
   const { FakeNotification, instances } = installNotification(permission);
@@ -111,6 +112,9 @@ function mountClient({
   }
   if (typeof appFocused === 'boolean') {
     window.__dshHelperAppFocused = appFocused;
+  }
+  if (typeof panelVisible === 'boolean') {
+    window.__dshHelperPanelVisible = panelVisible;
   }
   const document = {
     visibilityState: hidden ? 'hidden' : 'visible',
@@ -261,6 +265,26 @@ test('a helper WebView host posts a JSON string instead of using Notification', 
   assert.equal(payload.body, 'Task finished.');
   assert.equal(payload.sessionId, 'a');
   assert.equal(payload.tag, 'notify-away:a');
+});
+
+test('another instance on screen posts even when this panel still looks focused', () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
+    current: 'a',
+  });
+  const { instances, posted } = mountClient({
+    focused: true,
+    helper: true,
+    appFocused: true,
+    panelVisible: false,
+    list,
+  });
+  list.set({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: false }) },
+    current: 'a',
+  });
+  assert.equal(instances.length, 0);
+  assert.equal(posted.length, 1);
 });
 
 test('helper appFocused=false posts even when document.hasFocus still reports true', () => {

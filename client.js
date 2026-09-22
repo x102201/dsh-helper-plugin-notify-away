@@ -11,9 +11,11 @@
  *
  * In dsh-helper's WebView2 panel the toast is
  * `chrome.webview.postMessage(JSON.stringify({ kind: 'notify-away', ... }))`
- * — no Notification permission. Helper also writes
- * `window.__dshHelperAppFocused` from OS foreground tracking, because
- * `document.hasFocus()` in WebView2 often stays true after Alt+Tab.
+ * — no Notification permission. Helper writes
+ * `window.__dshHelperAppFocused` (process foreground) and
+ * `window.__dshHelperPanelVisible` (this instance is the one on screen).
+ * WebView2's `document.hasFocus()` / `visibilityState` often stay "looking"
+ * after Alt+Tab or after switching to another instance.
  * Helper click-back is the `dsh-helper-notify-click` CustomEvent.
  */
 window.__ModuleLoader__.load({
@@ -50,6 +52,7 @@ window.__ModuleLoader__.load({
 
     function isDocumentAway(doc) {
       if (doc.visibilityState === 'hidden') return true;
+      if (doc.panelVisible === false) return true;
       if (doc.appFocused === false) return true;
       if (doc.appFocused === true) return false;
       if (typeof doc.hasFocus === 'function' && !doc.hasFocus()) return true;
@@ -264,17 +267,22 @@ window.__ModuleLoader__.load({
 
     function readAwayState() {
       let appFocused;
+      let panelVisible;
       try {
         if (typeof window.__dshHelperAppFocused === 'boolean') {
           appFocused = window.__dshHelperAppFocused;
         }
+        if (typeof window.__dshHelperPanelVisible === 'boolean') {
+          panelVisible = window.__dshHelperPanelVisible;
+        }
       } catch {
-        // The helper flag is a plain window property; ignore exotic getters.
+        // The helper flags are plain window properties; ignore exotic getters.
       }
       return {
         visibilityState: document.visibilityState,
         hasFocus: () => (typeof document.hasFocus === 'function' ? document.hasFocus() : true),
         appFocused,
+        panelVisible,
       };
     }
 

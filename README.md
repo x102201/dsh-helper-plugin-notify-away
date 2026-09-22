@@ -10,11 +10,11 @@ A **system-notification** plugin for [DeepSeek Harness](https://github.com/deeps
 
 **Why it exists:** a long `dsh` turn is easy to miss if you have gone to another window. The Web UI already shows a green "done" dot in the sidebar when you are looking at it. This plugin covers the other case — you are not looking. In dsh-helper it asks the host to raise a system toast (`chrome.webview.postMessage`); in a system browser it uses the `Notification` API.
 
-**How it feels:** start a task, switch to another app or tab. When the root session goes idle — or stops to wait for you — a toast named after that session appears. Click it to focus the Web UI and open that session. If you were already watching that session, nothing is raised.
+**How it feels:** start a task, switch to another app, tab, or helper instance. When the root session goes idle — or stops to wait for you — a toast named after that session appears. Click it to focus the Web UI and open that session. If you were already watching that session on this instance, nothing is raised.
 
 ```text
-watching this session, window focused     silent
-other window / hidden tab / other session  system notification
+watching this session, this instance       silent
+other instance / other window / other tab  system notification
                                            (finished *or* waiting on you)
 ```
 
@@ -33,7 +33,7 @@ dsh plugin --profile web add github:x102201/dsh-helper-plugin-notify-away
 |---|---|
 | Completion edge | Fires when a listed session's `running` bit flips to idle. The first observation only records the bit, so a session already idle at load never toasts. |
 | Wait edge | Fires when `uiSession.pendingInteractions` newly carries a request for that session. A wait keeps `running` true, so the completion watcher would stay silent. Known kinds: approval, question, plan review. Any later kind still toasts. |
-| Away gate | Silent only while you are looking at **that** session: the page is visible, the window is focused, and `list.current` matches. Hidden tab, unfocused window, or a background session finishing / blocking → toast. |
+| Away gate | Silent only while you are looking at **that** session in **this** instance: the panel is on screen, the helper is in front, and `list.current` matches. Hidden tab, another instance, unfocused window, or a background session finishing / blocking → toast. |
 | Root sessions | Subagent rows (`origin: 'subagent'` or a `parentId`) are ignored, so parallel children do not flood the tray. |
 | Permission | In dsh-helper: none. In a system browser: asked on the first click or keystroke (Safari only grants gesture-bound requests). |
 | Dedup | Each toast is tagged `notify-away:<sessionId>`, so a repeat replaces the previous instead of stacking. |

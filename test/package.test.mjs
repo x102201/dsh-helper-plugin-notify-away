@@ -122,6 +122,7 @@ test('the client bundle stays in lockstep with the tested policy and config defa
     'return away || current !== sessionId',
     "summary.origin === 'subagent' || summary.parentId !== undefined",
     "doc.visibilityState === 'hidden'",
+    'doc.panelVisible === false',
     'WAIT_BODY_BY_KIND',
     'nextKey !== prevKey',
   ]) {
