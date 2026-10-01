@@ -72,10 +72,10 @@ test('the manifest exposes the plugin entry, the client bundle, and its bundle p
   assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml');
   assert.equal(manifest.dsh.client.platform, 'web');
   assert.equal(manifest.dsh.client.immediately, true);
-  assert.ok(manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-runtime'));
-  assert.ok(
-    manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-settings-plugins'),
-    'the client plugin must boot after the 插件配置 tab so settings.plugin.item exists',
+  assert.deepEqual(
+    manifest.dsh.client.inject,
+    ['@deepseek-ai/dsh-client-ui-plugin-manager'],
+    'the client page registers into the Plugins panel, so that package is the module dependency',
   );
   for (const shipped of ['index.js', 'client.js', 'lib', 'cordis.patch.yml']) {
     assert.ok(manifest.files.includes(shipped), `${shipped} must be packed for a github: install`);
@@ -149,12 +149,25 @@ test('the client bundle stays in lockstep with the tested policy and config defa
   assert.ok(client.includes("DEFAULT_BODY = 'Task finished.'"));
   assert.ok(policy.includes("WAIT_BODY = 'Waiting for you.'"));
   assert.ok(client.includes("WAIT_BODY = 'Waiting for you.'"));
-  assert.ok(client.includes('ONLY_WHEN_AWAY = true'));
+  assert.ok(client.includes('ONLY_WHEN_AWAY = false'));
   assert.ok(client.includes('INCLUDE_SUBAGENTS = false'));
+  assert.ok(
+    config.includes("readBoolean(config, 'onlyWhenAway', false)"),
+    'the host default must stay in lockstep with the client bundle',
+  );
   assert.ok(client.includes("EVENT_KEYS = ['completion', 'approval', 'question', 'planReview', 'otherWait']"));
   assert.ok(config.includes("'completion'"));
   assert.ok(client.includes("window.__dshHelperNotifyAway"));
-  assert.ok(client.includes("settings.plugin.item"));
+  assert.ok(client.includes("'plugins.bundle.config'"), 'the page registers on our own installed bundle card');
+  assert.ok(client.includes('configForms.get'), 'the page reads its namespace through the 0.2 settings service');
+  assert.ok(
+    !client.includes('owner.settingsScope'),
+    'the removed 0.1 settingsScope service must not be read',
+  );
+  assert.ok(
+    !client.includes("'settings.plugin.item'"),
+    'the removed 0.1 settings.plugin.item slot must not be registered into',
+  );
   assert.ok(client.includes("SETTINGS_NAMESPACE = 'notify-away'"));
   assert.ok(config.includes("SETTINGS_NAMESPACE = 'notify-away'"));
 });

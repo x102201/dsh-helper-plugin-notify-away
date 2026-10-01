@@ -4,11 +4,20 @@ import assert from 'node:assert/strict';
 import { bodyForWait, isDocumentAway, isEventEnabled, isSubagent, shouldNotify, shouldTrack, waitEvent, watchCompletions, watchPending } from '../lib/policy.js';
 import { createFakePendingStore, createFakeSessionList, pending, summary } from '../test-support/harness.mjs';
 
-test('shouldNotify is silent only while looking at the session that just finished', () => {
-  assert.equal(shouldNotify({ sessionId: 'a', current: 'a', away: false }), false);
+test('shouldNotify defaults to notifying wherever you look', () => {
+  // The shipped default is onlyWhenAway=false: toast even while you watch the
+  // very session that finished. The away gate is opt-in from the card.
+  assert.equal(shouldNotify({ sessionId: 'a', current: 'a', away: false }), true);
   assert.equal(shouldNotify({ sessionId: 'a', current: 'a', away: true }), true);
   assert.equal(shouldNotify({ sessionId: 'a', current: 'b', away: false }), true);
   assert.equal(shouldNotify({ sessionId: 'a', current: undefined, away: false }), true);
+});
+
+test('onlyWhenAway: true is silent only while looking at the session that just finished', () => {
+  assert.equal(shouldNotify({ sessionId: 'a', current: 'a', away: false, onlyWhenAway: true }), false);
+  assert.equal(shouldNotify({ sessionId: 'a', current: 'a', away: true, onlyWhenAway: true }), true);
+  assert.equal(shouldNotify({ sessionId: 'a', current: 'b', away: false, onlyWhenAway: true }), true);
+  assert.equal(shouldNotify({ sessionId: 'a', current: undefined, away: false, onlyWhenAway: true }), true);
 });
 
 test('onlyWhenAway: false notifies even while watching', () => {
@@ -103,13 +112,13 @@ test('watchCompletions fires once on running → idle when the user is away', ()
   assert.deepEqual(fired, ['a'], 'a later idle snapshot is not another edge');
 });
 
-test('watchCompletions stays silent when the user is looking at that session', () => {
+test('watchCompletions stays silent when the user is looking at that session and onlyWhenAway is on', () => {
   const fired = [];
   const list = createFakeSessionList({
     byId: { a: summary({ id: 'a', running: true }) },
     current: 'a',
   });
-  watchCompletions(list, (row) => fired.push(row.id), () => false);
+  watchCompletions(list, (row) => fired.push(row.id), () => false, { onlyWhenAway: true });
   list.set({
     byId: { a: summary({ id: 'a', running: false }) },
     current: 'a',
@@ -264,14 +273,14 @@ test('watchPending fires again when a replacement request uses a new key', () =>
   assert.deepEqual(fired, ['ask-1', 'ask-2']);
 });
 
-test('watchPending stays silent when the user is looking at that session', () => {
+test('watchPending stays silent when the user is looking at that session and onlyWhenAway is on', () => {
   const fired = [];
   const list = createFakeSessionList({
     byId: { a: summary({ id: 'a', running: true }) },
     current: 'a',
   });
   const pendingStore = createFakePendingStore();
-  watchPending(list, pendingStore, (event) => fired.push(event.interaction.key), () => false);
+  watchPending(list, pendingStore, (event) => fired.push(event.interaction.key), () => false, { onlyWhenAway: true });
   pendingStore.set([['a', pending({ sessionId: 'a', kind: 'question', key: 'q-1' })]]);
   assert.deepEqual(fired, []);
 });
@@ -291,7 +300,10 @@ test('watchPending still fires when a background session waits while you watch a
   assert.deepEqual(fired, ['b']);
 });
 
-test('watchPending does not toast subagent waits by default', () => {
+test('watchPending toasts a child agent waiting on you even with includeSubagents off', () => {
+  // includeSubagents gates running→idle only: a child blocked on an approval
+  // needs the user just as much as a root session does, so its wait still
+  // toasts with the switch off (the card's copy says exactly that).
   const fired = [];
   const list = createFakeSessionList({
     byId: {
@@ -303,7 +315,7 @@ test('watchPending does not toast subagent waits by default', () => {
   const pendingStore = createFakePendingStore();
   watchPending(list, pendingStore, (event) => fired.push(event.summary.id), () => true);
   pendingStore.set([['child', pending({ sessionId: 'child', kind: 'approval', key: 'ask-1' })]]);
-  assert.deepEqual(fired, []);
+  assert.deepEqual(fired, ['child']);
 });
 
 test('watchPending toasts subagent waits when includeSubagents is on', () => {

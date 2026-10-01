@@ -1,14 +1,37 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { apply, inject, name } from '../index.js';
+import { apply, inject, name, Config } from '../index.js';
 import { PLUGIN_NAME, resolveConfig } from '../lib/config.js';
 import { createFakeCtx } from '../test-support/harness.mjs';
 
 test('the module exports the Cordis plugin shape', () => {
   assert.equal(name, PLUGIN_NAME);
-  assert.deepEqual(inject, ['settings']);
+  // The row injects nothing so it stays an active Loader entry (the client
+  // scanner reads dsh.client from it) and mounts in profiles with no Settings.
+  assert.deepEqual(inject, []);
   assert.equal(typeof apply, 'function');
+});
+
+test('the module exports a Config schema (when schemastery is available)', () => {
+  // Config may be undefined in environments without schemastery,
+  // but in the test environment (running inside the DSH profile)
+  // schemastery should be resolvable.
+  if (Config !== undefined) {
+    assert.equal(typeof Config, 'function');
+    assert.equal(Config.type, 'object');
+    // Every live switch is volatile, so the page can change it without a restart.
+    const dict = Config.dict;
+    assert.equal(dict.completion.meta.volatile, true);
+    assert.equal(dict.approval.meta.volatile, true);
+    assert.equal(dict.question.meta.volatile, true);
+    assert.equal(dict.planReview.meta.volatile, true);
+    assert.equal(dict.otherWait.meta.volatile, true);
+    assert.equal(dict.onlyWhenAway.meta.volatile, true);
+    assert.equal(dict.includeSubagents.meta.volatile, true);
+    assert.equal(dict.title.meta.volatile, undefined);
+    assert.equal(dict.body.meta.volatile, undefined);
+  }
 });
 
 test('apply validates config, provides notifyAway, and logs a ready line', () => {
@@ -16,7 +39,7 @@ test('apply validates config, provides notifyAway, and logs a ready line', () =>
   apply(ctx, undefined);
   assert.deepEqual(ctx.provided.notifyAway.config, resolveConfig(undefined));
   assert.ok(Object.isFrozen(ctx.provided.notifyAway));
-  assert.ok(ctx.infos.some((line) => line.includes('notify-away ready') && line.includes('onlyWhenAway=true') && line.includes('completion=true')));
+  assert.ok(ctx.infos.some((line) => line.includes('notify-away ready') && line.includes('onlyWhenAway=false') && line.includes('completion=true')));
 });
 
 test('apply rejects a typo in the host-row config', () => {
@@ -24,36 +47,33 @@ test('apply rejects a typo in the host-row config', () => {
   assert.throws(() => apply(ctx, { onlyWhenAway: 'sometimes' }), /must be a boolean/);
 });
 
-test('apply registers the notify-away settings namespace when settings is present', () => {
-  const installed = [];
+test('apply installs the page policy through an optional settings child', () => {
+  const configured = [];
   const settings = {
-    installSection(owner, ns, schema, entry, hooks) {
-      installed.push({ owner, ns, schema, entry, hooks });
-      hooks.setSource(() => schema(entry));
-      hooks.onChange();
+    configure(policy, fiber) {
+      configured.push({ policy, fiber });
+      return () => {}; // disposer
     },
   };
   const ctx = createFakeCtx({ settings });
   apply(ctx, { approval: false });
-  assert.equal(installed.length, 1);
-  assert.equal(installed[0].ns, 'notify-away');
-  assert.equal(typeof installed[0].schema, 'function');
-  assert.equal(installed[0].entry.approval, false);
-  assert.equal(installed[0].entry.completion, true);
-  assert.deepEqual(installed[0].schema({}), {
-    completion: true,
-    approval: true,
-    question: true,
-    planReview: true,
-    otherWait: true,
-  });
-  assert.equal(installed[0].owner, ctx);
+  assert.equal(configured.length, 1);
+  // auto: false — this plugin ships its own page into the Plugins panel.
+  assert.equal(configured[0].policy.auto, false);
+  assert.equal(configured[0].fiber, ctx.fiber);
 });
 
-test('apply still mounts when settings is absent (UI-less profiles)', () => {
+test('apply configures nothing when no settings service exists', () => {
   const ctx = createFakeCtx();
   apply(ctx, undefined);
   assert.equal(ctx.settings, undefined);
+  assert.ok(ctx.infos.some((line) => line.includes('notify-away ready')));
+});
+
+test('a settings service without configure() is warned about, not fatal', () => {
+  const ctx = createFakeCtx({ settings: {} });
+  apply(ctx, undefined);
+  assert.ok(ctx.warnings.some((line) => line.includes('configure is not available')));
   assert.ok(ctx.infos.some((line) => line.includes('notify-away ready')));
 });
 

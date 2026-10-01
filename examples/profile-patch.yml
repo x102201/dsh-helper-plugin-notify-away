@@ -22,7 +22,7 @@
     - id: notify-away
       name: 'dsh-helper-plugin-notify-away'
       config:
-        onlyWhenAway: true
+        onlyWhenAway: false
         includeSubagents: false
         body: Task finished.
         completion: true

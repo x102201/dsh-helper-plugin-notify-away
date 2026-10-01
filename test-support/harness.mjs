@@ -67,6 +67,8 @@ export function createFakeCtx(options = {}) {
         callback({ ...ctx, settings: options.settings });
       }
     },
+    /** Stand-in fiber for settings.configure(policy, fiber). */
+    fiber: {},
   };
   if (options.settings) ctx.settings = options.settings;
   return ctx;

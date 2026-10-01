@@ -9,6 +9,14 @@
  *
  * Defaults match `resolveConfig(undefined)` in `lib/config.js`.
  *
+ * The live switches come from the Host's settings namespace — the Loader row
+ * id `notify-away`, read through `ctx.configForms.get()` — and the page that
+ * edits them is registered into the Plugins panel's `plugins.bundle.config`
+ * slot keyed by this package name, so it opens from OUR installed bundle card
+ * (not from the official plugin list). Both are 0.2 harness contracts: the 0.1
+ * `settingsScope` service and the `settings.plugin.item` slot no longer exist,
+ * so reading or registering against them silently disables configuration.
+ *
  * In dsh-helper's WebView2 panel the toast is
  * `chrome.webview.postMessage(JSON.stringify({ kind: 'notify-away', ... }))`
  * — no Notification permission. Helper writes
@@ -34,9 +42,25 @@ window.__ModuleLoader__.load({
       'plan-review': 'Plan awaiting review',
     });
     const TAG_PREFIX = 'notify-away:';
-    const ONLY_WHEN_AWAY = true;
+    // Shipped default is OFF: toast wherever you look, and let the card's switch
+    // opt into the away-only behavior. Matches lib/config.js and index.js Config.
+    const ONLY_WHEN_AWAY = false;
     const INCLUDE_SUBAGENTS = false;
     const EVENT_KEYS = ['completion', 'approval', 'question', 'planReview', 'otherWait'];
+    // Gate switches first: they decide *whether* to toast at all, then the
+    // five kinds decide which events do. Every one is a volatile Config field,
+    // so all of them are live-editable from the 插件 page.
+    const GATE_KEYS = ['onlyWhenAway', 'includeSubagents'];
+    const LIVE_KEYS = [...GATE_KEYS, ...EVENT_KEYS];
+    const LIVE_DEFAULTS = Object.freeze({
+      onlyWhenAway: ONLY_WHEN_AWAY,
+      includeSubagents: INCLUDE_SUBAGENTS,
+      completion: true,
+      approval: true,
+      question: true,
+      planReview: true,
+      otherWait: true,
+    });
     const SETTINGS_NAMESPACE = 'notify-away';
     const SETTINGS_LOCALE_NS = 'notify-away';
     const WAIT_EVENT_BY_KIND = Object.freeze({
@@ -92,11 +116,13 @@ window.__ModuleLoader__.load({
     }
 
     function watchCompletions(list, notify, isAway, options) {
-      const onlyWhenAway = options.onlyWhenAway !== false;
-      const includeSubagents = options.includeSubagents === true;
       const prevRunning = new Map();
 
       const onChange = () => {
+        // Read the gates per event, not once at mount: both are live switches
+        // the 插件 page writes while this watcher stays mounted.
+        const onlyWhenAway = options.onlyWhenAway === true;
+        const includeSubagents = options.includeSubagents === true;
         const snapshot = list.getSnapshot();
         const byId = snapshot.byId ?? {};
         const current = snapshot.current;
@@ -129,11 +155,16 @@ window.__ModuleLoader__.load({
     }
 
     function watchPending(list, pendingStore, notify, isAway, options) {
-      const onlyWhenAway = options.onlyWhenAway !== false;
-      const includeSubagents = options.includeSubagents === true;
       const prevKeys = new Map();
 
       const onChange = () => {
+        // Same as watchCompletions: the gates are read per event so a live
+        // switch takes effect without remounting the watcher.
+        //
+        // `includeSubagents` deliberately does not gate waits: a child agent
+        // blocked on approval or a question needs you just as much as a root
+        // session, and the card's copy only promises to gate finishes.
+        const onlyWhenAway = options.onlyWhenAway === true;
         const snapshot = list.getSnapshot();
         const byId = snapshot.byId ?? {};
         const current = snapshot.current;
@@ -157,7 +188,6 @@ window.__ModuleLoader__.load({
           if (
             nextKey !== undefined
             && nextKey !== prevKey
-            && shouldTrack(summary, includeSubagents)
             && isEventEnabled(options, waitEvent(interaction))
             && shouldNotify({ sessionId: summary.id, current, away: isAway(), onlyWhenAway })
           ) {
@@ -314,9 +344,15 @@ window.__ModuleLoader__.load({
     };
     for (const key of EVENT_KEYS) liveOptions[key] = true;
 
-    function readEventFlags(rowConfig) {
+    /**
+     * Read every live switch from the sources that can carry one, in
+     * precedence order: the Loader row's own config (the bundle patch), then
+     * the Host settings namespace (the profile's user layer, live), then the
+     * emergency `window.__dshHelperNotifyAway` overlay, which wins.
+     */
+    function readLiveFlags(rowConfig) {
       const flags = {};
-      for (const key of EVENT_KEYS) flags[key] = true;
+      for (const key of LIVE_KEYS) flags[key] = LIVE_DEFAULTS[key];
       const overlay = (() => {
         try {
           return window.__dshHelperNotifyAway;
@@ -326,7 +362,7 @@ window.__ModuleLoader__.load({
       })();
       for (const source of [rowConfig, settingsFlags, overlay]) {
         if (!source || typeof source !== 'object') continue;
-        for (const key of EVENT_KEYS) {
+        for (const key of LIVE_KEYS) {
           if (typeof source[key] === 'boolean') flags[key] = source[key];
         }
       }
@@ -334,10 +370,8 @@ window.__ModuleLoader__.load({
     }
 
     function refreshLiveOptions() {
-      liveOptions.onlyWhenAway = ONLY_WHEN_AWAY;
-      liveOptions.includeSubagents = INCLUDE_SUBAGENTS;
-      const flags = readEventFlags(rowEvents);
-      for (const key of EVENT_KEYS) liveOptions[key] = flags[key];
+      const flags = readLiveFlags(rowEvents);
+      for (const key of LIVE_KEYS) liveOptions[key] = flags[key];
     }
 
     function watchOptions() {
@@ -372,11 +406,16 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * Narrow one settings section to the live switches, filling omitted keys
+     * with their default. The Host already projects the schema, so this is a
+     * belt-and-braces guard against a namespace read from a different shape.
+     */
     function decodeEventFlags(section) {
       if (!section || typeof section !== 'object' || Array.isArray(section)) return undefined;
       const out = {};
-      for (const key of EVENT_KEYS) {
-        out[key] = typeof section[key] === 'boolean' ? section[key] : true;
+      for (const key of LIVE_KEYS) {
+        out[key] = typeof section[key] === 'boolean' ? section[key] : LIVE_DEFAULTS[key];
       }
       return out;
     }
@@ -389,30 +428,20 @@ window.__ModuleLoader__.load({
       tag.dataset.plugin = PLUGIN_NAME;
       tag.dataset.pluginCss = tagId;
       tag.textContent = [
-        '.dshNa_card{border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-3);border-radius:16px;list-style:none}',
-        '.dshNa_cardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
-        '.dshNa_header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}',
-        '.dshNa_headText{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}',
-        '.dshNa_name{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}',
-        '.dshNa_plugin{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.4;font-weight:500;word-break:break-all}',
-        '.dshNa_description{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}',
-        '.dshNa_about{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.6;margin:0;padding:4px 0 8px}',
-        '.dshNa_repo{margin:0 0 8px;font-size:12px;line-height:1.5}',
+        // Page body only: the Plugins panel draws the card, icon, title, and
+        // crumb around it, so these rules stay close to the official pages.
+        '.dshNa_page{display:flex;flex-direction:column;gap:2px}',
+        '.dshNa_about{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.6;margin:0;padding:4px 0 6px}',
+        '.dshNa_repo{margin:0 0 10px;font-size:12px;line-height:1.5}',
         '.dshNa_repo a{color:var(--dsw-alias-brand-primary);word-break:break-all}',
-        '.dshNa_unsaved{color:var(--dsw-alias-label-secondary);font-size:12px;flex:none}',
-        '.dshNa_chevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}',
-        '.dshNa_chevronOpen{transform:rotate(180deg)}',
-        '.dshNa_body{border-top:.5px solid var(--dsw-alias-border-l2);margin:0 16px;padding:8px 0 12px;display:flex;flex-direction:column;gap:2px}',
-        '.dshNa_kind{align-items:center;gap:10px;padding:10px 0;display:flex;border-top:.5px solid var(--dsw-alias-border-l2)}',
+        '.dshNa_kinds{flex-direction:column;display:flex}',
+        '.dshNa_kind{align-items:center;gap:10px;padding:11px 0;display:flex;border-top:.5px solid var(--dsw-alias-border-l2)}',
         '.dshNa_kind input{width:16px;height:16px;flex:none}',
         '.dshNa_kindLabel{flex:1;min-width:0;color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:1.5}',
         '.dshNa_kindHint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;display:block;font-weight:400}',
-        '.dshNa_footer{border-top:.5px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex}',
+        '.dshNa_footer{border-top:.5px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:14px 0 2px;display:flex}',
         '.dshNa_failed{min-width:0;color:var(--dsw-alias-label-error);flex:1;margin:0;font-size:12px;line-height:1.5}',
-        '.dshNa_discard,.dshNa_save{appearance:none;font:inherit;cursor:pointer;border:1px solid #0000;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}',
-        '.dshNa_discard{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}',
-        '.dshNa_save{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}',
-        '.dshNa_discard:disabled,.dshNa_save:disabled{opacity:.4;cursor:default}',
+        '.dshNa_saving{min-width:0;color:var(--dsw-alias-label-tertiary);flex:1;margin:0;font-size:12px;line-height:1.5}',
       ].join('');
       document.head.appendChild(tag);
     }
@@ -421,16 +450,21 @@ window.__ModuleLoader__.load({
       zh: {
         title: '离开时通知',
         plugin: PLUGIN_NAME,
-        description: '插件 dsh-helper-plugin-notify-away：离开这场会话时才弹系统通知。切到别的窗口、别的实例，或当前面板没显示时会提醒；正在看这场会话、helper 也在前台时保持安静。默认五种全开，可按种类关掉。',
-        intro: '这是 dsh-helper 插件 dsh-helper-plugin-notify-away。会话结束、需要审批、提问、计划待审，或其他卡住等人的情况，会在你离开这场会话时弹出系统通知。盯着这场会话、窗口也在前台时不弹。下面每种都可以单独关掉，保存后立刻生效，默认全开。',
+        summary: '会话结束或卡住等你时弹系统通知；可勾上「只在离开时提醒」。',
+        description: '插件 dsh-helper-plugin-notify-away：默认无论你在看哪儿都会弹系统通知。勾上「只在离开时提醒」后，正在看这场会话、helper 也在前台时保持安静；切到别的窗口、别的实例，或当前面板没显示时照样提醒。下面每种事件都能单独关掉，点一下就立即生效（没有保存按钮）。',
+        intro: '这是 dsh-helper 插件 dsh-helper-plugin-notify-away。会话结束、需要审批、提问、计划待审，或其他卡住等人的情况会弹出系统通知。默认无论你在看哪儿都弹；勾上「只在离开时提醒」就只在离开这场会话时弹。每个开关点一下就立即写入，没有保存按钮。',
         repoLabel: '源码',
         expand: '展开',
         collapse: '收起',
         unsaved: '未保存',
         discard: '放弃',
         save: '保存',
-        saving: '保存中',
-        saveFailed: '保存失败，请重试。',
+        saving: '正在保存…',
+        saveFailed: '保存失败，请再点一次这个开关重试。',
+        onlyWhenAway: '只在离开时提醒',
+        onlyWhenAwayHint: '不勾选（默认）：无论你在看哪儿都弹。勾上后，正在看这场会话、helper 也在前台时不弹。',
+        includeSubagents: '包含子智能体',
+        includeSubagentsHint: '子会话（由主会话派发的 agent）结束时也提醒。子会话在等你时始终提醒。',
         completion: '任务完成',
         completionHint: '会话从运行变为结束时（取消也会结束）。',
         approval: '等待审批',
@@ -445,16 +479,21 @@ window.__ModuleLoader__.load({
       en: {
         title: 'Notify when away',
         plugin: PLUGIN_NAME,
-        description: 'Plugin dsh-helper-plugin-notify-away: toast only when you leave this session — another window, another instance, or this panel hidden. Silent while you watch it and helper is in front. All five kinds are on by default; turn any off below.',
-        intro: 'This is the dsh-helper plugin dsh-helper-plugin-notify-away. Completions, approvals, questions, plan review, and other waits toast when you are away from that session. No toast while you are looking at it with the helper in front. Each kind can be turned off; a save takes effect immediately. All kinds default on.',
+        summary: 'Toast when a session finishes or waits on you; away-only is one switch.',
+        description: 'Plugin dsh-helper-plugin-notify-away: by default it toasts wherever you are looking. Turn "Only when away" on to stay silent while you watch that session with helper in front — another window, another instance, or a hidden panel still toasts. Every event kind can be switched off, and each switch writes on click (there is no save button).',
+        intro: 'This is the dsh-helper plugin dsh-helper-plugin-notify-away. Completions, approvals, questions, plan review, and other waits raise a toast — by default wherever you are looking. Turn "Only when away" on to be notified only while you are away from that session. Every switch writes as you click it; there is nothing to save.',
         repoLabel: 'Source',
         expand: 'Expand',
         collapse: 'Collapse',
         unsaved: 'Unsaved',
         discard: 'Discard',
         save: 'Save',
-        saving: 'Saving',
-        saveFailed: 'Could not save. Try again.',
+        saving: 'Saving…',
+        saveFailed: 'Could not save. Click that switch once more to retry.',
+        onlyWhenAway: 'Only when away',
+        onlyWhenAwayHint: 'Off (default): always toast. On: stay silent while you are looking at that session with helper in front.',
+        includeSubagents: 'Include subagents',
+        includeSubagentsHint: 'Also toast when a delegated child session finishes. A child that waits on you always toasts.',
         completion: 'Task finished',
         completionHint: 'When a session goes from running to idle (cancel also idles).',
         approval: 'Waiting for approval',
@@ -468,39 +507,63 @@ window.__ModuleLoader__.load({
       },
     };
 
+    /**
+     * Store behind the plugin page.
+     *
+     * Every switch writes on click — there is no draft/save step. A draft is
+     * exactly what made this card lie: the shared form publishes a snapshot
+     * whenever the Host settings document moves, the old store dropped the
+     * pending edit on any publish, and "uncheck, then Save" could therefore end
+     * in an empty op list and a silent no-op (no write, no error, no toast
+     * change).
+     *
+     * Writes are optimistic: the clicked value renders immediately (`pending`),
+     * the Host answer is authoritative, and a refusal or transport failure
+     * reverts the switch and reports it.
+     *
+     * @param {object} scope - ConfigForm for the `notify-away` namespace.
+     * @returns {object} store for the renderer.
+     */
     function createCardStore(scope) {
       const listeners = new Set();
-      let draft;
-      let saving = false;
+      let pending = {};
+      let inflight = 0;
       let failed = false;
-      let open = false;
       let cached;
 
       function flagsFor(snap) {
-        if (snap.status === 'ready' && snap.value) return { ...snap.value };
-        const flags = {};
-        for (const key of EVENT_KEYS) flags[key] = true;
-        return flags;
+        if (snap.status === 'ready' && snap.value) return { ...LIVE_DEFAULTS, ...snap.value };
+        return { ...LIVE_DEFAULTS };
       }
 
-      function currentFlags() {
+      /** The Host's saved value. */
+      function savedFlags() {
         return flagsFor(scope.getSnapshot());
       }
 
+      /** The saved value with this session's optimistic writes on top. */
+      function shownFlags() {
+        return { ...savedFlags(), ...pending };
+      }
+
+      /** Drop overlays the Host has already confirmed, so a late snapshot cannot revert them. */
+      function pruneSettled() {
+        const saved = savedFlags();
+        for (const [key, value] of Object.entries(pending)) {
+          if (saved[key] === value) delete pending[key];
+        }
+      }
+
       function projectionFor(snap) {
-        const value = flagsFor(snap);
-        const staged = draft ?? value;
+        const saved = flagsFor(snap);
         const user = snap.user && typeof snap.user === 'object' ? snap.user : {};
-        const dirty = EVENT_KEYS.some((key) => staged[key] !== value[key]);
         return {
           available: snap.status === 'ready',
           writable: snap.writable === true,
-          dirty,
-          saving,
+          saving: inflight > 0,
           failed,
-          open,
-          flags: staged,
-          overridden: Object.fromEntries(EVENT_KEYS.map((key) => [key, Object.prototype.hasOwnProperty.call(user, key)])),
+          flags: { ...saved, ...pending },
+          overridden: Object.fromEntries(LIVE_KEYS.map((key) => [key, Object.prototype.hasOwnProperty.call(user, key)])),
         };
       }
 
@@ -509,11 +572,9 @@ window.__ModuleLoader__.load({
         if (a === undefined) return false;
         return a.available === b.available
           && a.writable === b.writable
-          && a.dirty === b.dirty
           && a.saving === b.saving
           && a.failed === b.failed
-          && a.open === b.open
-          && EVENT_KEYS.every((key) => a.flags[key] === b.flags[key] && a.overridden[key] === b.overridden[key]);
+          && LIVE_KEYS.every((key) => a.flags[key] === b.flags[key] && a.overridden[key] === b.overridden[key]);
       }
 
       /**
@@ -539,10 +600,10 @@ window.__ModuleLoader__.load({
       }
 
       scope.subscribe(() => {
-        if (!saving) {
-          draft = undefined;
-          failed = false;
-        }
+        // A snapshot from the Host (any settings document move) must never undo
+        // a switch the user just clicked; it may only retire an overlay the Host
+        // has already confirmed.
+        pruneSettled();
         publish();
       });
 
@@ -552,102 +613,77 @@ window.__ModuleLoader__.load({
           listeners.add(listener);
           return () => listeners.delete(listener);
         },
-        setOpen(next) {
-          open = next;
-          publish();
-        },
-        toggle(key) {
-          const next = { ...(draft ?? currentFlags()) };
-          next[key] = !next[key];
-          draft = next;
+        /**
+         * Flip one switch and persist it right away.
+         *
+         * @param {string} key - a {@link LIVE_KEYS} member.
+         * @returns {Promise<boolean>} whether the Host accepted the write.
+         */
+        async toggle(key) {
+          const next = !shownFlags()[key];
+          pending = { ...pending, [key]: next };
           failed = false;
+          inflight += 1;
           publish();
-        },
-        discard() {
-          draft = undefined;
-          failed = false;
-          publish();
-        },
-        async save() {
-          const snap = scope.getSnapshot();
-          const staged = draft ?? currentFlags();
-          const value = currentFlags();
-          const ops = [];
-          for (const key of EVENT_KEYS) {
-            if (staged[key] === value[key]) continue;
-            ops.push({ op: 'set', path: [key], value: staged[key] });
-          }
-          if (ops.length === 0) return;
-          saving = true;
-          failed = false;
-          publish();
+          let accepted = false;
           try {
-            await scope.mutate(ops, snap.revision);
-            draft = undefined;
-            failed = false;
-            open = false;
+            // ConfigForm.mutate resolves true for Host acceptance and false for
+            // a refused or skipped write; a transport failure rejects.
+            const snap = scope.getSnapshot();
+            accepted = (await scope.mutate([{ op: 'set', path: [key], value: next }], snap.revision)) !== false;
           } catch {
-            failed = true;
+            accepted = false;
           } finally {
-            saving = false;
+            inflight -= 1;
+            if (accepted) {
+              pruneSettled();
+            } else {
+              // Put the saved value back and say so instead of silently keeping
+              // a switch that never reached the Host.
+              const rest = { ...pending };
+              delete rest[key];
+              pending = rest;
+              failed = true;
+            }
             publish();
           }
+          return accepted;
         },
       };
     }
 
+    /**
+     * The plugin's page inside the Plugins panel. The panel itself draws the
+     * card (icon, title from `label`, crumb) and the one-liner, so this renders
+     * only the body: the copy and the switches. Each switch writes on click —
+     * there is no save button to forget.
+     */
     function NotifyAwayCard(props) {
       const React = props.React;
-      const { t, useNotifyAwayCard } = props;
+      const { t, useNotifyAwayCard, view } = props;
       const el = React.createElement;
-      const title = t('title');
       const state = useNotifyAwayCard((snapshot) => snapshot);
-      const [open, setOpen] = React.useState(false);
-      const saveStarted = React.useRef(false);
-      // Collapse only after a save finishes. Toggling a checkbox back to the
-      // stored value clears "dirty" but must not fold the card — that is still
-      // an edit in progress, same as 终端 / Agent 循环.
-      React.useEffect(() => {
-        if (state.saving) {
-          saveStarted.current = true;
-          return;
-        }
-        if (!saveStarted.current) return;
-        saveStarted.current = false;
-        if (!state.dirty && !state.failed) setOpen(false);
-      }, [state.dirty, state.failed, state.saving]);
-      return el('li', { className: 'dshNa_card' + (open ? ' dshNa_cardOpen' : '') },
-        el('button', {
-          type: 'button',
-          className: 'dshNa_header',
-          'aria-expanded': open,
-          'aria-label': `${t(open ? 'collapse' : 'expand')}: ${title}`,
-          onClick: () => setOpen(!open),
-        },
-          el('span', { className: 'dshNa_headText' },
-            el('span', { className: 'dshNa_name' }, title),
-            el('span', { className: 'dshNa_plugin' }, t('plugin')),
-            el('span', { className: 'dshNa_description' }, t('description')),
-          ),
-          state.dirty ? el('span', { className: 'dshNa_unsaved' }, t('unsaved')) : null,
-          el('span', { className: 'dshNa_chevron' + (open ? ' dshNa_chevronOpen' : ''), 'aria-hidden': true }, '▾'),
+      // The bundle card asks for `view: 'page'`; `summary` is answered too so the
+      // same component can serve a one-liner seat without drawing chrome.
+      if (view === 'summary') return t('summary');
+      const disabled = !state.writable;
+      return el('div', { className: 'dshNa_page' },
+        el('p', { className: 'dshNa_about' }, t('intro')),
+        el('p', { className: 'dshNa_repo' },
+          `${t('repoLabel')}: `,
+          el('a', {
+            href: PLUGIN_REPO,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+          }, PLUGIN_REPO),
         ),
-        open ? el('div', { className: 'dshNa_body' },
-          el('p', { className: 'dshNa_about' }, t('intro')),
-          el('p', { className: 'dshNa_repo' },
-            `${t('repoLabel')}: `,
-            el('a', {
-              href: PLUGIN_REPO,
-              target: '_blank',
-              rel: 'noopener noreferrer',
-              onClick: (event) => event.stopPropagation(),
-            }, PLUGIN_REPO),
-          ),
-          ...EVENT_KEYS.map((key) => el('label', { key, className: 'dshNa_kind' },
+        // Gates first (whether to toast at all), then the five event kinds.
+        el('div', { className: 'dshNa_kinds' },
+          ...LIVE_KEYS.map((key) => el('label', { key, className: 'dshNa_kind' },
             el('input', {
               type: 'checkbox',
               checked: state.flags[key] !== false,
-              disabled: !state.writable || state.saving,
+              disabled,
               onChange: () => props.toggle(key),
             }),
             el('span', { className: 'dshNa_kindLabel' },
@@ -655,30 +691,20 @@ window.__ModuleLoader__.load({
               el('span', { className: 'dshNa_kindHint' }, t(`${key}Hint`)),
             ),
           )),
-          el('div', { className: 'dshNa_footer' },
-            state.failed ? el('p', { className: 'dshNa_failed', role: 'status' }, t('saveFailed')) : null,
-            el('button', {
-              type: 'button',
-              className: 'dshNa_discard',
-              disabled: !state.dirty || state.saving,
-              onClick: props.discard,
-            }, t('discard')),
-            el('button', {
-              type: 'button',
-              className: 'dshNa_save',
-              disabled: !state.dirty || state.saving,
-              onClick: props.save,
-            }, t(state.saving ? 'saving' : 'save')),
-          ),
-        ) : null,
+        ),
+        el('div', { className: 'dshNa_footer' },
+          state.failed
+            ? el('p', { className: 'dshNa_failed', role: 'status' }, t('saveFailed'))
+            : (state.saving ? el('p', { className: 'dshNa_saving', role: 'status' }, t('saving')) : null),
+        ),
       );
     }
 
     function attachSettings(owner) {
       return owner.effect(() => {
         if (
-          !owner.settingsScope
-          || typeof owner.settingsScope.bind !== 'function'
+          !owner.configForms
+          || typeof owner.configForms.get !== 'function'
           || !owner.slots
           || typeof owner.slots.inject !== 'function'
         ) {
@@ -692,22 +718,23 @@ window.__ModuleLoader__.load({
           React = typeof globalThis !== 'undefined' ? globalThis.React : undefined;
         }
         if (!React || typeof React.createElement !== 'function') {
-          try { console.warn('[notify-away] React is not available; 插件配置 card skipped'); } catch { /* ignore */ }
+          try { console.warn('[notify-away] React is not available; the 插件 page is skipped'); } catch { /* ignore */ }
           return () => {};
         }
 
-        const scope = owner.settingsScope.bind({
-          namespace: SETTINGS_NAMESPACE,
-          decode: decodeEventFlags,
-        });
+        // The namespace IS the Loader row id; `configForms.get` hands back the
+        // shared form over the settings mirror, already narrowed to the
+        // `.volatile()` fields of the Config schema.
+        const form = owner.configForms.get(SETTINGS_NAMESPACE);
         const applySnapshot = () => {
-          const snap = scope.getSnapshot();
-          settingsFlags = snap.status === 'ready' && snap.value ? snap.value : {};
+          const snap = typeof form.getSnapshot === 'function' ? form.getSnapshot() : undefined;
+          const value = snap && snap.status === 'ready' ? decodeEventFlags(snap.value) : undefined;
+          settingsFlags = value ?? {};
           refreshLiveOptions();
         };
         applySnapshot();
-        const stopScope = typeof scope.subscribe === 'function' ? scope.subscribe(applySnapshot) : () => {};
-        const store = createCardStore(scope);
+        const stopForm = typeof form.subscribe === 'function' ? form.subscribe(applySnapshot) : () => {};
+        const store = createCardStore(form);
         // `locale` is ambient copy, not a declared dependency of this card, so it
         // MUST be read through the non-strict accessor: cordis throws
         // `cannot get property "locale" without inject` on `owner.locale` for a
@@ -721,12 +748,14 @@ window.__ModuleLoader__.load({
         const t = locale && typeof locale.bind === 'function'
           ? locale.bind(SETTINGS_LOCALE_NS)
           : (key) => SETTINGS_COPY.zh[key] ?? SETTINGS_COPY.en[key] ?? key;
-        try { console.info('[notify-away] registering settings.plugin.item card'); } catch { /* ignore */ }
-        const stopSlot = owner.slots.inject('settings.plugin.item', function* () {
+        const registerPage = () => owner.slots.inject('plugins.bundle.config', function* () {
           yield owner.slots.register(
             {
-              name: 'settings.plugin.item',
-              key: SETTINGS_NAMESPACE,
+              name: 'plugins.bundle.config',
+              // Keyed by the bundle's package name: this is what puts the
+              // configuration on OUR installed package page, between its
+              // description and its rows — not in the official plugin list.
+              key: PLUGIN_NAME,
               // The renderer builds the `t` seat from this namespace and refuses to
               // render an entry that declares one while no locale face is
               // installed, so only declare it when that face really exists — the
@@ -737,18 +766,22 @@ window.__ModuleLoader__.load({
                 React,
                 t,
                 toggle: (key) => store.toggle(key),
-                discard: () => store.discard(),
-                save: () => store.save(),
               }),
             },
             NotifyAwayCard,
           );
         });
+        // `whileServed` keeps the page alive exactly while the Host serves the
+        // namespace, so a deployment without this row shows no trace of it.
+        const stopPage = typeof owner.configForms.whileServed === 'function'
+          ? owner.configForms.whileServed([SETTINGS_NAMESPACE], registerPage)
+          : registerPage();
+        try { console.info('[notify-away] registering plugins.bundle.config page'); } catch { /* ignore */ }
         return () => {
-          stopScope();
-          if (typeof stopSlot === 'function') stopSlot();
+          stopForm();
+          if (typeof stopPage === 'function') stopPage();
         };
-      }, 'notify-away: settings card');
+      }, 'notify-away: settings page');
     }
 
     exports.name = PLUGIN_NAME;
@@ -773,9 +806,10 @@ window.__ModuleLoader__.load({
       if (typeof ctx.inject === 'function') {
         ctx.inject(['uiSession'], attachWaitWatcher);
         // locale is optional copy; waiting on it blocked the card when the
-        // service name lagged. slots.inject itself waits until the Plugins
-        // tab declares settings.plugin.item.
-        ctx.inject(['slots', 'settingsScope'], attachSettings);
+        // service name lagged. `configForms` is the 0.2 settings transport, and
+        // slots.inject inside it waits until the Plugins panel declares
+        // plugins.bundle.config.
+        ctx.inject(['slots', 'configForms'], attachSettings);
       } else {
         attachWaitWatcher(ctx);
         attachSettings(ctx);

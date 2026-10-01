@@ -4,11 +4,13 @@ English | [中文](README.zh.md)
 
 ![license: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![dsh: 0.1.5-rc.2](https://img.shields.io/badge/dsh-0.1.5--rc.2-4b32c3)
-![tests: 83 passing](https://img.shields.io/badge/tests-83%20passing-brightgreen)
+![tests: 93 passing](https://img.shields.io/badge/tests-93%20passing-brightgreen)
 
-A **system-notification** plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`), modeled on Cursor's agent toast: stay silent while you watch the session that just finished or blocked, and raise an OS notification when you have switched away.
+A **system-notification** plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`): raise an OS notification when a session finishes or blocks on you — by default wherever you are looking. Turn on the card's "Only when away" switch to stay silent while you watch that session.
 
-**Why it exists:** a long `dsh` turn is easy to miss if you have gone to another window. The Web UI already shows a green "done" dot in the sidebar when you are looking at it. This plugin covers the other case — you are not looking. In dsh-helper it asks the host to raise a system toast (`chrome.webview.postMessage`); in a system browser it uses the `Notification` API.
+**Why it exists:** a long `dsh` turn is easy to miss if you have gone to another window. The Web UI already shows a green "done" dot in the sidebar when you are looking at it. This plugin turns "finished / blocked on you" into a system toast — in dsh-helper by asking the host to raise it (`chrome.webview.postMessage`), in a system browser through the `Notification` API.
+
+**What it feels like:** start a task and switch to another app, tab, or helper instance. When a root session goes idle, or stops to wait for you, a toast appears titled with that session. Clicking it focuses the Web UI and opens the session. By default it also toasts while you are watching that session; turn "Only when away" on to stop that.
 
 **How it feels:** start a task, switch to another app, tab, or helper instance. When the root session goes idle — or stops to wait for you — a toast named after that session appears. Click it to focus the Web UI and open that session. If you were already watching that session on this instance, nothing is raised.
 
@@ -33,8 +35,8 @@ dsh plugin --profile web add github:x102201/dsh-helper-plugin-notify-away
 |---|---|
 | Completion edge | Fires when a listed session's `running` bit flips to idle. The first observation only records the bit, so a session already idle at load never toasts. |
 | Wait edge | Fires when `uiSession.pendingInteractions` newly carries a request for that session. A wait keeps `running` true, so the completion watcher would stay silent. Known kinds: approval, question, plan review. Any later kind still toasts (`otherWait`). Each kind can be turned off in config. |
-| Away gate | Silent only while you are looking at **that** session in **this** instance: the panel is on screen, the helper is in front, and `list.current` matches. Hidden tab, another instance, unfocused window, or a background session finishing / blocking → toast. |
-| Root sessions | Subagent rows (`origin: 'subagent'` or a `parentId`) are ignored, so parallel children do not flood the tray. |
+| Away gate | **Off by default** (toast wherever you look). Turn "Only when away" on to stay silent only while you are looking at **that** session in **this** instance: the panel is on screen, the helper is in front, and `list.current` matches. A hidden tab, another instance, an unfocused window, or a background session finishing / blocking still toasts. |
+| Root sessions | Completion edges ignore subagent rows (`origin: 'subagent'` or a `parentId`) by default, so parallel children do not flood the tray; turn "Include subagents" on to toast them too. **Wait edges are not gated by that switch** — a child agent blocked on you always toasts. |
 | Permission | In dsh-helper: none. In a system browser: asked on the first click or keystroke (Safari only grants gesture-bound requests). |
 | Dedup | Each toast is tagged `notify-away:<sessionId>`, so a repeat replaces the previous instead of stacking. |
 | Click | Focuses the window and calls `ctx.sessions.open(sessionId)`. Helper click-back is the `dsh-helper-notify-click` event. |
@@ -113,14 +115,14 @@ dsh plugin --profile web remove dsh-helper-plugin-notify-away
 
 ## Configuration
 
-All keys are optional; an empty mapping uses the defaults (every notification kind **on**). **The intended way to change them is Settings → 插件 → 插件配置**, where this plugin appears as **离开时通知** with a checkbox per kind.
+All keys are optional; an empty mapping uses the defaults (every notification kind **on**, **wherever you are looking**). **The intended way to change them is the sidebar Plugins panel → the installed `dsh-helper-plugin-notify-away` card**: its page carries the configuration between the description and 包含的组件 — seven switches that **write on click, with no Save button**.
 
-The host row also validates the same keys at load (unknown keys and wrong types fail boot). A patch can pin deployment defaults; the settings page writes user overrides to `$DSH_HOME/settings.yaml` and they take effect immediately.
+The host row also validates the same keys at load (unknown keys and wrong types fail boot). A patch can pin deployment defaults; the card writes user overrides into the profile's `cordis.patch.yml` user layer and they take effect immediately, with no restart.
 
 ```yaml
 - id: notify-away
   config:
-    onlyWhenAway: true
+    onlyWhenAway: false
     includeSubagents: false
     body: Task finished.
     completion: true
@@ -132,8 +134,8 @@ The host row also validates the same keys at load (unknown keys and wrong types 
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `onlyWhenAway` | boolean | `true` | Suppress the toast while you are looking at the session that just finished. |
-| `includeSubagents` | boolean | `false` | Also toast when a child agent goes idle. |
+| `onlyWhenAway` | boolean | `false` | Turn it on to stay silent while you are looking at the session that just finished (with helper in front). Off by default: notify wherever you look. |
+| `includeSubagents` | boolean | `false` | Also toast when a child agent **finishes** (`running → idle`). A child that waits on you always toasts, whatever this switch says. |
 | `title` | string | *(session display title)* | Optional static toast title. |
 | `body` | string | `Task finished.` | Toast body copy for a completion. |
 | `completion` | boolean | `true` | Toast when a session goes `running → idle`. Cancelled turns also idle. |
@@ -146,9 +148,9 @@ Omit a kind (or leave it `true`) to keep it on. Set it to `false` to silence tha
 
 A patch replaces the targeted row's whole `config` mapping; omitted keys fall back to the defaults. Put overrides in the profile's `cordis.patch.yml`, or see [`examples/profile-patch.yml`](examples/profile-patch.yml).
 
-The settings page is the live switch: Host `installSection('notify-away')` serves the namespace, and the browser half registers a `settings.plugin.item` card. Saving writes the user layer (not the cordis row). `window.__dshHelperNotifyAway` remains an emergency overlay on top of that.
+The live switches travel the 0.2 settings channel: the host declares only that this row ships its own page (`ctx.settings.configure({ auto: false }, ctx.fiber)`), the namespace is the Loader row id `notify-away`, described by the settings service straight from the exported `Config` schema; the browser half reads it through `ctx.configForms.get('notify-away')`, writes with `.mutate()`, and registers the page into the Plugins panel's **`plugins.bundle.config`** slot keyed by this package name — so it opens from OUR installed bundle card, not from the official plugin list (that seat is `plugins.item`). Saving writes the profile's user layer, not the cordis row. `window.__dshHelperNotifyAway` remains an emergency overlay on top of that.
 
-Three things keep that card on screen. The Host namespace has to be served by `settings.describe` (every registered namespace is). The card's store has to hand React a **reference-stable** snapshot: the renderer binds it through `useSyncExternalStore`, so a store that builds a new object per call re-renders forever until React throws — the slot's error boundary then hides the card and the console says `slot entry crashed in 'settings.plugin.item'`. And the fiber that registers the card injects `slots` and `settingsScope` only, so every ambient service it touches must be read with the non-strict `ctx.get(name)` accessor: cordis throws `cannot get property "locale" without inject` on `ctx.locale`, and a throw before `slots.register` means no card at all (that error is the only trace).
+Three things keep that page on screen. The host `Config` export has to be describable by the settings service (exporting it is enough, and only `.volatile()` fields reach the form). The page's store has to hand React a **reference-stable** snapshot: the renderer binds it through `useSyncExternalStore`, so a store that builds a new object per call re-renders forever until React throws — the slot's error boundary then hides the page and the console says `slot entry crashed in 'plugins.bundle.config'`. And the fiber that registers the page injects `slots` and `configForms` only, so every ambient service it touches must be read with the non-strict `ctx.get(name)` accessor: cordis throws `cannot get property "locale" without inject` on `ctx.locale`, and a throw before `slots.register` means no page at all (that error is the only trace).
 
 ## How it works
 
@@ -183,7 +185,7 @@ Written against **dsh `0.1.5-rc.2`**. Seams used:
 | Seam | Use |
 |---|---|
 | Host row `name: ./index.js` + `dsh.bundle.patch` | `link:` / `github:` install |
-| `package.json` `dsh.client` (`platform: web`, `inject: [@deepseek-ai/dsh-client-runtime, @deepseek-ai/dsh-client-ui-settings-plugins]`) | Web UI scans and serves `./client`, after the Plugins settings section declares `settings.plugin.item` |
+| `package.json` `dsh.client` (`platform: web`, `inject: [@deepseek-ai/dsh-client-ui-plugin-manager]`) | Web UI scans and serves `./client`, after the Plugins panel declares `plugins.bundle.config` |
 | Client `inject: ['sessions']` | `ctx.sessions.list` snapshot + `ctx.sessions.open`; wait watcher attaches to `ctx.uiSession.pendingInteractions` |
 | `chrome.webview.postMessage` | dsh-helper panel → OS toast (no Notification permission) |
 | Browser `Notification` API | fallback OS banner when the UI is not inside helper |

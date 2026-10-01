@@ -60,7 +60,14 @@ function createFakeSettingsHost(value = {}) {
     ...value,
   };
   const listeners = new Set();
-  const scope = {
+  /** Push a snapshot to every subscriber, the way the settings mirror does. */
+  const publish = () => {
+    for (const listener of listeners) listener();
+  };
+  // The 0.2 shape: one ConfigForm per namespace, over the shared settings
+  // mirror. `get` returns it, `whileServed` keeps a page registered while the
+  // Host serves the namespace.
+  const form = {
     getSnapshot() {
       return {
         status: 'ready',
@@ -68,6 +75,7 @@ function createFakeSettingsHost(value = {}) {
         writable: true,
         revision: 1,
         user: { ...flags },
+        mode: 'host',
         base: {
           completion: true,
           approval: true,
@@ -87,7 +95,18 @@ function createFakeSettingsHost(value = {}) {
         if (op.op === 'set') flags[key] = op.value;
         if (op.op === 'unset') delete flags[key];
       }
-      for (const listener of listeners) listener();
+      publish();
+      return true;
+    },
+  };
+  const served = [];
+  const configForms = {
+    get(namespace) {
+      served.push(String(namespace));
+      return form;
+    },
+    whileServed(namespaces, register) {
+      return register(new Set(namespaces.map(String)));
     },
   };
   const slotRegs = [];
@@ -119,7 +138,18 @@ function createFakeSettingsHost(value = {}) {
       return (key) => localeDicts.get(ns)?.zh?.[key] ?? key;
     },
   };
-  return { scope, slots, locale, slotRegs, flags, listeners, localeRegistrations };
+  return {
+    form,
+    configForms,
+    slots,
+    locale,
+    slotRegs,
+    flags,
+    listeners,
+    publish,
+    localeRegistrations,
+    served,
+  };
 }
 function loadClient() {
   const registrations = [];
@@ -243,7 +273,7 @@ function mountClient({
         });
         return;
       }
-      if (settingsHost && want.includes('settingsScope')) {
+      if (settingsHost && want.includes('configForms')) {
         // Model cordis 4: a sibling-provided service is reachable only through
         // the non-strict `ctx.get(name)`; reading `ctx.<service>` from a fiber
         // that never injected it throws, and a throw here aborted the card
@@ -254,7 +284,7 @@ function mountClient({
           effect(fn) {
             return fn();
           },
-          settingsScope: { bind: () => settingsHost.scope },
+          configForms: settingsHost.configForms,
           slots: settingsHost.slots,
           get(name) {
             return !localeAbsent && name === 'locale' ? settingsHost.locale : undefined;
@@ -301,7 +331,25 @@ test('a running → idle edge while away raises one tagged notification', () => 
   assert.equal(instances[0].options.tag, 'notify-away:a');
 });
 
-test('looking at the finishing session raises no notification', () => {
+test('looking at the finishing session stays silent when onlyWhenAway is on', () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
+    current: 'a',
+  });
+  const { instances } = mountClient({
+    focused: true,
+    hidden: false,
+    list,
+    settingsValue: { onlyWhenAway: true },
+  });
+  list.set({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: false }) },
+    current: 'a',
+  });
+  assert.equal(instances.length, 0);
+});
+
+test('the shipped default toasts even while you look at the finishing session', () => {
   const list = createFakeSessionList({
     byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
     current: 'a',
@@ -311,7 +359,8 @@ test('looking at the finishing session raises no notification', () => {
     byId: { a: summary({ id: 'a', displayTitle: 'A', running: false }) },
     current: 'a',
   });
-  assert.equal(instances.length, 0);
+  assert.equal(instances.length, 1, 'onlyWhenAway defaults off');
+  assert.equal(instances[0].title, 'A');
 });
 
 test('a hidden tab notifies even if hasFocus still reports true', () => {
@@ -467,13 +516,19 @@ test('a new approval wait while away raises a toast with the asker reason', () =
   assert.equal(instances[0].options.tag, 'notify-away:a');
 });
 
-test('looking at the waiting session raises no wait toast', () => {
+test('looking at the waiting session stays silent when onlyWhenAway is on', () => {
   const list = createFakeSessionList({
     byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
     current: 'a',
   });
   const pendingStore = createFakePendingStore();
-  const { instances } = mountClient({ focused: true, hidden: false, list, pendingStore });
+  const { instances } = mountClient({
+    focused: true,
+    hidden: false,
+    list,
+    pendingStore,
+    settingsValue: { onlyWhenAway: true },
+  });
   pendingStore.set([['a', pending({ sessionId: 'a', kind: 'question', key: 'q-1' })]]);
   assert.equal(instances.length, 0);
 });
@@ -564,7 +619,7 @@ test('ctx.inject waits for uiSession before watching pending interactions', () =
     },
   });
   assert.deepEqual(injected[0], ['uiSession']);
-  assert.deepEqual(injected[1], ['slots', 'settingsScope']);
+  assert.deepEqual(injected[1], ['slots', 'configForms']);
   pendingStore.set([['a', pending({ sessionId: 'a', kind: 'approval', key: 'ask-1', reason: 'escalate sandbox' })]]);
   assert.equal(instances.length, 1);
   assert.equal(instances[0].options.body, 'escalate sandbox');
@@ -623,15 +678,21 @@ test('window.__dshHelperNotifyAway overlays apply config and wins on conflict', 
   assert.equal(instances.length, 0);
 });
 
-test('the client registers a 插件配置 card keyed by notify-away', () => {
+test('the client registers its page on our own installed bundle card', () => {
   const { settingsHost } = mountClient({ focused: false, settingsValue: {} });
-  const card = settingsHost.slotRegs.find((entry) => entry.options && entry.options.key === 'notify-away');
+  const card = settingsHost.slotRegs.find(
+    (entry) => entry.options && entry.options.name === 'plugins.bundle.config',
+  );
   assert.ok(card);
-  assert.equal(card.options.name, 'settings.plugin.item');
+  // Keyed by the package name, so it renders on this bundle's page — never in
+  // the official plugin list (that is `plugins.item`).
+  assert.equal(card.options.key, 'dsh-helper-plugin-notify-away');
+  assert.equal(card.options.id, undefined);
+  assert.deepEqual(settingsHost.served, ['notify-away']);
   assert.equal(typeof card.component, 'function');
 });
 
-test('settingsScope flags live-update completion toasts without remounting', async () => {
+test('configForms flags live-update completion toasts without remounting', async () => {
   const list = createFakeSessionList({
     byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
     current: 'a',
@@ -641,7 +702,7 @@ test('settingsScope flags live-update completion toasts without remounting', asy
     list,
     settingsValue: { completion: true },
   });
-  await settingsHost.scope.mutate([{ op: 'set', path: ['completion'], value: false }]);
+  await settingsHost.form.mutate([{ op: 'set', path: ['completion'], value: false }]);
   list.set({
     byId: { a: summary({ id: 'a', displayTitle: 'A', running: false }) },
     current: 'a',
@@ -649,11 +710,63 @@ test('settingsScope flags live-update completion toasts without remounting', asy
   assert.equal(instances.length, 0);
 });
 
-/** Mount the card, then read the store its slot registration injects. */
+test('turning onlyWhenAway off notifies while you watch the session', async () => {
+  const list = createFakeSessionList({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: true }) },
+    current: 'a',
+  });
+  // Focused on the very session that finishes: the away gate must normally
+  // swallow this, and only the live switch may let it through.
+  const { instances, settingsHost } = mountClient({
+    focused: true,
+    hidden: false,
+    list,
+    settingsValue: { onlyWhenAway: true },
+  });
+  await settingsHost.form.mutate([{ op: 'set', path: ['onlyWhenAway'], value: false }]);
+  list.set({
+    byId: { a: summary({ id: 'a', displayTitle: 'A', running: false }) },
+    current: 'a',
+  });
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].title, 'A');
+});
+
+test('includeSubagents from the live settings value toasts child sessions', async () => {
+  const list = createFakeSessionList({
+    byId: { child: summary({ id: 'child', displayTitle: 'Child', running: true, parentId: 'root' }) },
+    current: 'root',
+  });
+  const { instances, settingsHost } = mountClient({
+    focused: false,
+    list,
+    settingsValue: { includeSubagents: false },
+  });
+  list.set({
+    byId: { child: summary({ id: 'child', displayTitle: 'Child', running: false, parentId: 'root' }) },
+    current: 'root',
+  });
+  assert.equal(instances.length, 0, 'the shipped default keeps subagents silent');
+  await settingsHost.form.mutate([{ op: 'set', path: ['includeSubagents'], value: true }]);
+  list.set({
+    byId: { child: summary({ id: 'child', displayTitle: 'Child', running: true, parentId: 'root' }) },
+    current: 'root',
+  });
+  list.set({
+    byId: { child: summary({ id: 'child', displayTitle: 'Child', running: false, parentId: 'root' }) },
+    current: 'root',
+  });
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].title, 'Child');
+});
+
+/** Mount the page, then read the store its slot registration injects. */
 function cardStore(options = {}) {
   const mounted = mountClient({ focused: false, settingsValue: {}, ...options });
-  const card = mounted.settingsHost.slotRegs.find((entry) => entry.options && entry.options.key === 'notify-away');
-  assert.ok(card, 'the settings.plugin.item card must be registered');
+  const card = mounted.settingsHost.slotRegs.find(
+    (entry) => entry.options && entry.options.name === 'plugins.bundle.config',
+  );
+  assert.ok(card, 'the plugins.bundle.config page must be registered');
   return { ...mounted, card, store: card.options.inject().hooks.notifyAwayCard };
 }
 
@@ -666,61 +779,75 @@ test('the card store keeps its snapshot reference stable between renders', () =>
   assert.equal(store.getSnapshot(), first);
   assert.equal(store.getSnapshot(), first);
   assert.equal(first.flags.completion, true);
-  assert.equal(first.dirty, false);
+  assert.equal(first.saving, false);
+  assert.equal(first.failed, false);
 });
 
-test('the card store replaces its snapshot exactly once per real change', () => {
-  const { store } = cardStore();
+test('clicking a switch writes it immediately and keeps the optimistic value', async () => {
+  const { store, settingsHost } = cardStore();
   const first = store.getSnapshot();
+  assert.equal(first.flags.onlyWhenAway, false, 'the shipped default is off');
 
-  store.toggle('completion');
+  const accepted = await store.toggle('onlyWhenAway');
+  assert.equal(accepted, true);
+  assert.equal(settingsHost.flags.onlyWhenAway, true, 'the Host got the write');
   const toggled = store.getSnapshot();
   assert.notEqual(toggled, first);
-  assert.equal(toggled.flags.completion, false);
-  assert.equal(toggled.dirty, true);
+  assert.equal(toggled.flags.onlyWhenAway, true);
+  assert.equal(toggled.failed, false);
   assert.equal(store.getSnapshot(), toggled);
 
-  store.setOpen(true);
-  const opened = store.getSnapshot();
-  assert.notEqual(opened, toggled);
-  assert.equal(opened.open, true);
-  assert.equal(store.getSnapshot(), opened);
+  // Flipping it back is another immediate write, not a draft.
+  await store.toggle('onlyWhenAway');
+  assert.equal(settingsHost.flags.onlyWhenAway, false);
+  assert.equal(store.getSnapshot().flags.onlyWhenAway, false);
+});
 
-  store.discard();
-  const restored = store.getSnapshot();
-  assert.notEqual(restored, opened);
-  assert.equal(restored.flags.completion, true);
-  assert.equal(restored.dirty, false);
-  assert.equal(store.getSnapshot(), restored);
+test('a rejected write reverts the switch and reports it', async () => {
+  const { store, settingsHost } = cardStore();
+  settingsHost.form.mutate = async () => false;
+  const accepted = await store.toggle('question');
+  assert.equal(accepted, false);
+  const state = store.getSnapshot();
+  assert.equal(state.failed, true, 'the card must say the write did not land');
+  assert.equal(state.flags.question, true, 'the switch falls back to the saved value');
+});
+
+test('a snapshot from the Host cannot undo a switch the user just clicked', async () => {
+  const { store, settingsHost } = cardStore();
+  await store.toggle('approval');
+  assert.equal(store.getSnapshot().flags.approval, false);
+  // An unrelated document update arrives while the page is open: the old
+  // draft-based store dropped the pending edit here, which is why "uncheck, then
+  // save" used to write nothing at all.
+  settingsHost.publish();
+  assert.equal(store.getSnapshot().flags.approval, false, 'the click survives the snapshot');
 });
 
 test('a saved namespace change replaces the card snapshot once', async () => {
   const { store, settingsHost } = cardStore();
   const before = store.getSnapshot();
-  await settingsHost.scope.mutate([{ op: 'set', path: ['question'], value: false }]);
+  await settingsHost.form.mutate([{ op: 'set', path: ['question'], value: false }]);
   const after = store.getSnapshot();
   assert.notEqual(after, before);
   assert.equal(after.flags.question, false);
   assert.equal(store.getSnapshot(), after);
 });
 
-test('saving a toggled kind writes the changed keys and clears the draft', async () => {
+test('every switch of the page writes its own key', async () => {
   const { store, settingsHost } = cardStore();
-  store.toggle('approval');
-  store.toggle('otherWait');
-  store.toggle('otherWait');
-  await store.save();
-  assert.equal(settingsHost.flags.approval, false);
-  assert.equal(settingsHost.flags.otherWait, true);
-  const saved = store.getSnapshot();
-  assert.equal(saved.dirty, false);
-  assert.equal(saved.open, false);
-  assert.equal(saved.saving, false);
+  for (const key of ['onlyWhenAway', 'includeSubagents', 'completion', 'approval', 'question', 'planReview', 'otherWait']) {
+    const before = store.getSnapshot().flags[key];
+    await store.toggle(key);
+    assert.equal(settingsHost.flags[key], !before, `${key} reached the Host`);
+    assert.equal(store.getSnapshot().flags[key], !before);
+  }
+  assert.equal(store.getSnapshot().saving, false);
 });
 
 test('the card reads the ambient locale service without declaring it in inject', () => {
-  // `owner.locale` throws under cordis unless the fiber injected it; the card
-  // is registered with slots + settingsScope only, so it must use ctx.get().
+  // `owner.locale` throws under cordis unless the fiber injected it; the page
+  // is registered with slots + configForms only, so it must use ctx.get().
   const { card, settingsHost } = cardStore();
   assert.deepEqual(settingsHost.localeRegistrations, ['notify-away']);
   assert.equal(card.options.locale, 'notify-away');
@@ -747,17 +874,29 @@ test('the card names the plugin and links to GitHub', () => {
   assert.ok(source.includes("href: PLUGIN_REPO"));
 });
 
-test('the card does not fold just because a checkbox returns to the saved value', () => {
+test('the page renders its body inline, without a second title or a collapse control', () => {
   const source = readFileSync(join(ROOT, 'client.js'), 'utf8');
-  assert.ok(
-    source.includes('saveStarted'),
-    'collapse must wait for a finished save, like the built-in plugin cards',
-  );
-  assert.equal(
-    source.includes('if (!state.dirty && !state.failed && !state.saving) setOpen(state.open)'),
-    false,
-    'clearing dirty (re-checking a box) must not fold the card',
-  );
+  // The panel draws the card title, icon, and crumb; a card that drew its own
+  // header (the 0.1 settings-tab shape) would duplicate them.
+  assert.equal(source.includes('dshNa_header'), false);
+  assert.equal(source.includes('setOpen'), false);
+  const { card, store } = cardStore();
+  const tree = JSON.stringify(card.component({
+    ...card.options.inject(),
+    view: 'page',
+    useNotifyAwayCard: (selector) => selector(store.getSnapshot()),
+  }));
+  assert.ok(tree.includes('dshNa_kinds'), 'the page draws its switches inline');
+  assert.equal(tree.includes('dshNa_save'), false, 'every switch writes on click; there is no save button');
+  assert.equal(tree.includes('dshNa_discard'), false, 'and nothing to discard');
+  const face = card.options.inject();
+  const summary = card.component({
+    ...face,
+    view: 'summary',
+    useNotifyAwayCard: (selector) => selector(store.getSnapshot()),
+  });
+  assert.equal(summary, face.t('summary'), 'the summary view is the one-liner under the card title');
+  assert.ok(summary.length > 0);
 });
 
 test('the card still registers and keeps copy when no locale face is installed', () => {

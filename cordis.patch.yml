@@ -29,7 +29,7 @@
 #
 #   - id: notify-away
 #     config:
-#       onlyWhenAway: true
+#       onlyWhenAway: false
 #       includeSubagents: false
 #       body: Task finished.
 #       completion: true
@@ -40,13 +40,18 @@
 #
 # Accepted keys: onlyWhenAway, includeSubagents, title, body,
 # completion, approval, question, planReview, otherWait.
-# Event kinds default to on; set a key to false to silence that toast.
+# Every event kind defaults on, `includeSubagents` defaults off, and
+# `onlyWhenAway` defaults off too (toast wherever you look; opt in to the
+# away-only behavior). All of them are live switches — the 插件 page writes each
+# one as it is clicked, with no save step. Set a key to false to silence that
+# toast; `includeSubagents: false` only gates child *finishes*, a child that
+# waits on you still toasts.
 # The host row validates these at load. The browser half uses the same
 # defaults, merges apply()'s second argument when the loader passes it, and
-# lets window.__dshHelperNotifyAway overlay boolean event flags. The 插件配置
-# card is served by installSection('notify-away') plus a client
-# settings.plugin.item registration. Host YAML
-# does not reach the WebView without that overlay, the settings page, or an RPC. See README.md.
+# lets window.__dshHelperNotifyAway overlay boolean flags. The 插件 page is
+# registered by the client half into the Plugins panel's plugins.bundle.config
+# slot, keyed by this package name, and reads its values through
+# ctx.configForms.get('notify-away'); the namespace is THIS row's id. See README.md.
 
 - insert:
     - id: notify-away

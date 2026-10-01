@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 
 import { DEFAULT_BODY, EVENT_KEYS, PLUGIN_NAME, SETTINGS_NAMESPACE, resolveConfig } from '../lib/config.js';
 
-test('defaults describe Cursor-like away-only notifications for root sessions', () => {
+test('defaults notify wherever you look, for root sessions only', () => {
   const config = resolveConfig(undefined);
-  assert.equal(config.onlyWhenAway, true);
+  // onlyWhenAway is opt-in (default off): out of the box a toast fires even
+  // while you watch the very session that finished.
+  assert.equal(config.onlyWhenAway, false);
   assert.equal(config.includeSubagents, false);
   assert.equal(config.title, undefined);
   assert.equal(config.body, DEFAULT_BODY);
